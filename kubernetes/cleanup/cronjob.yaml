@@ -1,0 +1,60 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: runner-cleanup
+  namespace: github-runners
+  labels:
+    app: runner-cleanup
+    app.kubernetes.io/name: runner-cleanup
+    app.kubernetes.io/component: cleanup
+    app.kubernetes.io/part-of: webhook-scaler
+spec:
+  schedule: "*/5 * * * *"  # Every 5 minutes
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: runner-cleanup
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+          - name: cleanup
+            image: bitnami/kubectl:1.31
+            command: ["/bin/bash", "-c"]
+            args:
+            - |
+              # Delete runner jobs that:
+              # 1. Are older than 30 minutes AND
+              # 2. Have not completed successfully
+
+              echo "Starting orphan cleanup..."
+
+              kubectl get jobs -l app=github-runner -o json | \
+              jq -r '.items[] | select(.status.succeeded != 1) | select((now - (.metadata.creationTimestamp | fromdateiso8601)) > 1800) | .metadata.name' | \
+              while read job; do
+                echo "Deleting orphaned job: $job"
+                kubectl delete job "$job" --ignore-not-found
+              done
+
+              echo "Cleanup complete"
+            resources:
+              limits:
+                memory: 64Mi
+                cpu: 50m
+              requests:
+                memory: 32Mi
+                cpu: 10m
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop:
+                  - ALL

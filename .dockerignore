@@ -1,0 +1,8 @@
+.git
+.gitignore
+*.md
+!README.md
+kubernetes/
+helm/
+.github/
+.beads/

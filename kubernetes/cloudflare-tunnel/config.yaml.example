@@ -1,0 +1,17 @@
+# Cloudflare Tunnel configuration for webhook-scaler
+# Copy this file to config.yaml and update the values
+#
+# Documentation: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
+
+tunnel: your-tunnel-id
+credentials-file: /etc/cloudflared/credentials.json
+
+ingress:
+  # Route GitHub webhooks to the webhook-scaler service
+  - hostname: github-webhooks.yourdomain.com
+    service: http://webhook-scaler.github-runners.svc.cluster.local:80
+    originRequest:
+      # No TLS verification needed for internal service
+      noTLSVerify: true
+  # Catch-all rule (required by cloudflared)
+  - service: http_status:404

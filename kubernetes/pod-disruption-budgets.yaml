@@ -1,0 +1,30 @@
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: webhook-scaler
+  namespace: github-runners
+  labels:
+    app: webhook-scaler
+    app.kubernetes.io/name: webhook-scaler
+    app.kubernetes.io/part-of: webhook-scaler
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: webhook-scaler
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cloudflared
+  namespace: github-runners
+  labels:
+    app: cloudflared
+    app.kubernetes.io/name: cloudflared
+    app.kubernetes.io/part-of: webhook-scaler
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: cloudflared

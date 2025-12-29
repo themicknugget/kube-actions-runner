@@ -1,0 +1,16 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kube-actions-runner
+  namespace: github-runners
+  labels:
+    app: kube-actions-runner
+spec:
+  selector:
+    matchLabels:
+      app: kube-actions-runner
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s

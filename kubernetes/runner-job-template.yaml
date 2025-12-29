@@ -1,0 +1,68 @@
+# Runner Job Template
+#
+# This is a reference template showing the structure of Jobs created
+# dynamically by the webhook-scaler when a workflow_job webhook is received.
+#
+# The webhook-scaler creates Jobs programmatically using the Kubernetes API,
+# not by applying this file directly. This serves as documentation.
+#
+# Variables replaced at runtime:
+#   ${JOB_ID}     - GitHub workflow job ID (unique identifier)
+#   ${NAMESPACE}  - Target namespace for the runner
+#
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: runner-${JOB_ID}
+  namespace: ${NAMESPACE}
+  labels:
+    app: github-runner
+    app.kubernetes.io/name: github-runner
+    app.kubernetes.io/component: runner
+    app.kubernetes.io/managed-by: webhook-scaler
+  annotations:
+    github.com/workflow-job-id: "${JOB_ID}"
+spec:
+  # Automatically delete Job 5 minutes after completion
+  ttlSecondsAfterFinished: 300
+  # No retries - ephemeral runners should not restart
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: github-runner
+        app.kubernetes.io/name: github-runner
+        app.kubernetes.io/component: runner
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: runner
+          image: ghcr.io/actions/actions-runner:2.321.0
+          env:
+            - name: RUNNER_JITCONFIG
+              valueFrom:
+                secretKeyRef:
+                  name: runner-jit-${JOB_ID}
+                  key: jitconfig
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL

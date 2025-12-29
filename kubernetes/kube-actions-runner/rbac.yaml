@@ -1,0 +1,46 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-actions-runner
+  namespace: github-runners
+  labels:
+    app: kube-actions-runner
+    app.kubernetes.io/name: kube-actions-runner
+    app.kubernetes.io/component: controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kube-actions-runner
+  namespace: github-runners
+  labels:
+    app: kube-actions-runner
+    app.kubernetes.io/name: kube-actions-runner
+    app.kubernetes.io/component: controller
+rules:
+  # Manage runner Jobs
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "delete"]
+  # Manage JIT config Secrets for runners
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "get", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kube-actions-runner
+  namespace: github-runners
+  labels:
+    app: kube-actions-runner
+    app.kubernetes.io/name: kube-actions-runner
+    app.kubernetes.io/component: controller
+subjects:
+  - kind: ServiceAccount
+    name: kube-actions-runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kube-actions-runner

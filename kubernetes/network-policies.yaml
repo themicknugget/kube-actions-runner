@@ -1,0 +1,210 @@
+# Network Policies for webhook-scaler project
+#
+# These policies implement a least-privilege network security model:
+# - webhook-scaler: receives webhooks from cloudflared, calls GitHub API and K8s API
+# - cloudflared: initiates connections to Cloudflare edge and forwards to webhook-scaler
+# - github-runner: executes workflows, needs broad egress for workflow tasks
+#
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: webhook-scaler
+  namespace: github-runners
+  labels:
+    app.kubernetes.io/name: webhook-scaler
+    app.kubernetes.io/component: network-policy
+spec:
+  # Apply to webhook-scaler pods
+  podSelector:
+    matchLabels:
+      app: webhook-scaler
+  policyTypes:
+    - Ingress
+    - Egress
+
+  ingress:
+    # Allow incoming traffic only from cloudflared pods
+    # cloudflared forwards webhook requests from Cloudflare edge to webhook-scaler
+    - from:
+        - podSelector:
+            matchLabels:
+              app: cloudflared
+      ports:
+        - protocol: TCP
+          port: 8080  # webhook-scaler container port
+
+  egress:
+    # Allow DNS resolution (required for GitHub API calls)
+    # CoreDNS typically runs in kube-system namespace
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    # Allow HTTPS to GitHub API (api.github.com)
+    # Required for creating JIT runner configurations
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+
+    # Allow access to Kubernetes API server
+    # Required for creating runner Jobs and Secrets
+    # The API server endpoint varies by cluster; using CIDR allows flexibility
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443  # Default K8s API port
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cloudflared
+  namespace: github-runners
+  labels:
+    app.kubernetes.io/name: cloudflared
+    app.kubernetes.io/component: network-policy
+spec:
+  # Apply to cloudflared tunnel pods
+  podSelector:
+    matchLabels:
+      app: cloudflared
+  policyTypes:
+    - Ingress
+    - Egress
+
+  # No ingress rules - cloudflared initiates all connections outbound
+  # Cloudflare Tunnel works by establishing outbound connections to Cloudflare edge
+  ingress: []
+
+  egress:
+    # Allow DNS resolution
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    # Allow HTTPS to Cloudflare edge servers
+    # cloudflared establishes persistent connections to Cloudflare's edge network
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 7844  # Cloudflare Tunnel protocol port
+
+    # Allow traffic to webhook-scaler service
+    # cloudflared forwards incoming webhook requests to webhook-scaler
+    - to:
+        - podSelector:
+            matchLabels:
+              app: webhook-scaler
+      ports:
+        - protocol: TCP
+          port: 8080  # webhook-scaler container port
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: runner-jobs
+  namespace: github-runners
+  labels:
+    app.kubernetes.io/name: github-runner
+    app.kubernetes.io/component: network-policy
+spec:
+  # Apply to dynamically created runner job pods
+  podSelector:
+    matchLabels:
+      app: github-runner
+  policyTypes:
+    - Ingress
+    - Egress
+
+  # No ingress - runners don't need to receive incoming connections
+  # They communicate outbound to GitHub Actions services
+  ingress: []
+
+  egress:
+    # Allow DNS resolution
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    # Allow HTTPS to GitHub Actions services
+    # Runners need to communicate with:
+    # - github.com (for code checkout)
+    # - api.github.com (for API calls)
+    # - *.actions.githubusercontent.com (for Actions artifacts/logs)
+    # - ghcr.io (for container images)
+    # - Various other GitHub-owned services
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+
+    # Allow HTTP (some package managers use HTTP)
+    # NOTE: Consider removing this if your workflows don't need HTTP
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 80
+
+    # Allow SSH (for git operations over SSH)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 22
+
+    # NOTE: This policy is intentionally permissive for egress
+    # Workflows may need to:
+    # - Pull dependencies from npm, PyPI, Maven, etc.
+    # - Push to container registries
+    # - Access cloud provider APIs
+    # - Download tools and binaries
+    #
+    # For stricter security, consider:
+    # 1. Using an egress proxy/gateway
+    # 2. Limiting to specific IP ranges for known services
+    # 3. Using separate policies per workflow type

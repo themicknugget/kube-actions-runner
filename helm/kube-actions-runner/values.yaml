@@ -1,0 +1,225 @@
+# Default values for kube-actions-runner
+
+### Image
+image:
+  # -- Container image repository for the webhook-scaler
+  repository: webhook-scaler
+  # -- Image tag (defaults to Chart appVersion if not set)
+  tag: ""
+  # -- Image pull policy
+  pullPolicy: IfNotPresent
+
+# -- Image pull secrets for private registries
+imagePullSecrets: []
+
+# -- Override the name of the chart
+nameOverride: ""
+
+# -- Override the full name of the chart
+fullnameOverride: ""
+
+### Deployment
+# -- Number of webhook-scaler replicas
+replicaCount: 1
+
+### Config
+config:
+  # -- Runner mode: "repository" or "organization"
+  runnerMode: "repository"
+
+  # -- Label matchers for filtering workflow jobs (comma-separated)
+  # Only jobs with ALL specified labels will trigger runner creation
+  # Example: "self-hosted,linux,x64"
+  labelMatchers: "self-hosted"
+
+  # -- TTL in seconds for completed runner Jobs
+  ttlSeconds: 300
+
+  # -- GitHub runner group ID (optional, for organization runners)
+  runnerGroupId: ""
+
+  # -- Runner container image
+  runnerImage: "ghcr.io/actions/actions-runner:2.321.0"
+
+  # -- Docker-in-Docker sidecar image (if DinD is needed)
+  dindImage: "docker:27-dind"
+
+  # -- Listen address for the webhook server
+  listenAddr: ":8080"
+
+### Secrets
+secrets:
+  # -- Use an existing secret instead of creating one
+  # If set, the chart will not create a Secret resource
+  existingSecret: ""
+
+  # -- GitHub webhook secret (required if existingSecret is not set)
+  # Used to validate incoming webhook payloads
+  webhookSecret: ""
+
+  # -- GitHub token with permissions to create JIT runner configs
+  # Required scopes: admin:org (for org runners) or repo (for repo runners)
+  githubToken: ""
+
+### Resources
+resources:
+  limits:
+    cpu: 100m
+    memory: 256Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+### Service Account
+serviceAccount:
+  # -- Create a service account for the webhook-scaler
+  create: true
+  # -- Name of the service account (auto-generated if not set)
+  name: ""
+  # -- Annotations to add to the service account
+  annotations: {}
+
+### Service
+service:
+  # -- Service type
+  type: ClusterIP
+  # -- Service port
+  port: 80
+  # -- Target port on the container
+  targetPort: 8080
+
+### Pod
+# -- Additional pod annotations
+podAnnotations: {}
+
+# -- Additional pod labels
+podLabels: {}
+
+# -- Pod security context
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Container security context
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# -- Node selector for pod scheduling
+nodeSelector: {}
+
+# -- Tolerations for pod scheduling
+tolerations: []
+
+# -- Affinity rules for pod scheduling
+affinity: {}
+
+### Probes
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 2
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+### Metrics
+metrics:
+  serviceMonitor:
+    # -- Create a ServiceMonitor for Prometheus Operator
+    enabled: false
+    # -- Additional labels for the ServiceMonitor
+    labels: {}
+    # -- Scrape interval
+    interval: 30s
+    # -- Scrape timeout
+    scrapeTimeout: 10s
+    # -- Metric path
+    path: /metrics
+
+### Cloudflare Tunnel (Optional)
+cloudflare:
+  # -- Enable Cloudflare Tunnel deployment for secure webhook ingress
+  enabled: false
+
+  # -- Cloudflare Tunnel ID
+  tunnelId: ""
+
+  # -- Cloudflared container image
+  image: "cloudflare/cloudflared:2024.12.2"
+
+  # -- Number of cloudflared replicas
+  replicaCount: 1
+
+  # -- Use existing secret for tunnel credentials
+  # Secret should contain 'credentials.json' key
+  existingSecret: ""
+
+  # -- Resource limits for cloudflared
+  resources:
+    limits:
+      memory: 128Mi
+      cpu: 100m
+    requests:
+      memory: 64Mi
+      cpu: 50m
+
+### Cleanup CronJob (Optional)
+cleanup:
+  # -- Enable cleanup CronJob for orphaned runner jobs
+  enabled: false
+
+  # -- Cron schedule for cleanup job
+  schedule: "*/5 * * * *"
+
+  # -- kubectl image for cleanup job
+  image: "bitnami/kubectl:1.31"
+
+  # -- Age threshold in seconds for orphan detection (default 30 minutes)
+  ageThresholdSeconds: 1800
+
+  # -- Resource limits for cleanup job
+  resources:
+    limits:
+      memory: 64Mi
+      cpu: 50m
+    requests:
+      memory: 32Mi
+      cpu: 10m
+
+### Network Policies (Optional)
+networkPolicies:
+  # -- Enable network policies for webhook-scaler components
+  enabled: false
+
+  # -- Allow runner jobs to access any external endpoint
+  # Set to false for stricter security (may break some workflows)
+  allowRunnerEgress: true
+
+### Pod Disruption Budget (Optional)
+podDisruptionBudget:
+  # -- Enable PodDisruptionBudget for webhook-scaler
+  enabled: false
+
+  # -- Minimum available pods (can be number or percentage)
+  minAvailable: 1
+
+  # -- Maximum unavailable pods (alternative to minAvailable)
+  # maxUnavailable: 1

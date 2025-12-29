@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kube-actions-runner.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kube-actions-runner.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "kube-actions-runner.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "kube-actions-runner.labels" . | nindent 8 }}
+        app.kubernetes.io/component: controller
+        app: webhook-scaler
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "kube-actions-runner.serviceAccountName" . }}
+      automountServiceAccountToken: true
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: webhook-scaler
+          image: {{ include "kube-actions-runner.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kube-actions-runner.secretName" . }}
+                  key: webhook-secret
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kube-actions-runner.secretName" . }}
+                  key: github-token
+            - name: LISTEN_ADDR
+              value: {{ .Values.config.listenAddr | quote }}
+            - name: RUNNER_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- if .Values.config.runnerMode }}
+            - name: RUNNER_MODE
+              value: {{ .Values.config.runnerMode | quote }}
+            {{- end }}
+            {{- if .Values.config.labelMatchers }}
+            - name: LABEL_MATCHERS
+              value: {{ .Values.config.labelMatchers | quote }}
+            {{- end }}
+            {{- if .Values.config.ttlSeconds }}
+            - name: TTL_SECONDS
+              value: {{ .Values.config.ttlSeconds | quote }}
+            {{- end }}
+            {{- if .Values.config.runnerGroupId }}
+            - name: RUNNER_GROUP_ID
+              value: {{ .Values.config.runnerGroupId | quote }}
+            {{- end }}
+            {{- if .Values.config.runnerImage }}
+            - name: RUNNER_IMAGE
+              value: {{ .Values.config.runnerImage | quote }}
+            {{- end }}
+            {{- if .Values.config.dindImage }}
+            - name: DIND_IMAGE
+              value: {{ .Values.config.dindImage | quote }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

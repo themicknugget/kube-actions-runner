@@ -1,0 +1,89 @@
+{{- if .Values.cloudflare.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kube-actions-runner.cloudflare.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kube-actions-runner.cloudflare.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    tunnel: {{ .Values.cloudflare.tunnelId }}
+    credentials-file: /etc/cloudflared/credentials.json
+    metrics: 0.0.0.0:2000
+    no-autoupdate: true
+    ingress:
+      - service: http://{{ include "kube-actions-runner.fullname" . }}:{{ .Values.service.port }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kube-actions-runner.cloudflare.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kube-actions-runner.cloudflare.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.cloudflare.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "kube-actions-runner.cloudflare.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kube-actions-runner.cloudflare.labels" . | nindent 8 }}
+    spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: cloudflared
+          image: {{ .Values.cloudflare.image }}
+          args:
+            - tunnel
+            - --config
+            - /etc/cloudflared/config.yaml
+            - run
+          resources:
+            {{- toYaml .Values.cloudflare.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: 2000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 2000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: config
+              mountPath: /etc/cloudflared/config.yaml
+              subPath: config.yaml
+              readOnly: true
+            - name: credentials
+              mountPath: /etc/cloudflared/credentials.json
+              subPath: credentials.json
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "kube-actions-runner.cloudflare.fullname" . }}-config
+        - name: credentials
+          secret:
+            {{- if .Values.cloudflare.existingSecret }}
+            secretName: {{ .Values.cloudflare.existingSecret }}
+            {{- else }}
+            secretName: {{ include "kube-actions-runner.cloudflare.fullname" . }}-credentials
+            {{- end }}
+{{- end }}

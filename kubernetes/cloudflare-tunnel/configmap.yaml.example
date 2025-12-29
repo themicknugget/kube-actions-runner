@@ -1,0 +1,21 @@
+# ConfigMap for Cloudflare Tunnel configuration
+# Copy this file to configmap.yaml and update config.yaml with your values
+#
+# To apply: kubectl apply -f configmap.yaml
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloudflared-config
+  namespace: github-runners
+data:
+  config.yaml: |
+    tunnel: your-tunnel-id
+    credentials-file: /etc/cloudflared/credentials.json
+
+    ingress:
+      - hostname: github-webhooks.yourdomain.com
+        service: http://webhook-scaler.github-runners.svc.cluster.local:80
+        originRequest:
+          noTLSVerify: true
+      - service: http_status:404

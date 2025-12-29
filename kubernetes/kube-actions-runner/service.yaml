@@ -1,0 +1,19 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-actions-runner
+  namespace: github-runners
+  labels:
+    app: kube-actions-runner
+    app.kubernetes.io/name: kube-actions-runner
+    app.kubernetes.io/component: controller
+spec:
+  type: ClusterIP
+  selector:
+    app: kube-actions-runner
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
