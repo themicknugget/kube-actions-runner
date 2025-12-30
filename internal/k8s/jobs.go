@@ -392,8 +392,8 @@ func (c *Client) buildDinDPodSpec(config RunnerJobConfig, secretName string) cor
 				Name:  "runner",
 				Image: image,
 				Command: []string{"/bin/sh", "-c"},
-				// Run the runner, capture exit code, kill dind sidecar, then exit with original code
-				Args: []string{"./run.sh --jitconfig \"$RUNNER_JITCONFIG\"; exitcode=$?; kill -TERM $(pgrep -f 'dockerd') 2>/dev/null || true; exit $exitcode"},
+				// Run the runner, capture exit code, kill dind sidecar (exact match to avoid matching self), then exit
+				Args: []string{"./run.sh --jitconfig \"$RUNNER_JITCONFIG\"; exitcode=$?; pkill -TERM -x dockerd 2>/dev/null || true; exit $exitcode"},
 				Env: []corev1.EnvVar{
 					{
 						Name: "RUNNER_JITCONFIG",
