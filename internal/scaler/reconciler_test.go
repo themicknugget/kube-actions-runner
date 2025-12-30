@@ -62,14 +62,14 @@ func TestReconciler_MatchesLabels(t *testing.T) {
 		shouldMatch   bool
 	}{
 		{
-			name:        "no matchers matches everything",
+			name:        "no matchers matches self-hosted",
 			matchers:    nil,
 			labels:      []string{"self-hosted", "linux"},
 			shouldMatch: true,
 		},
 		{
 			name:        "single matcher matches",
-			matchers:    []LabelMatcher{{Labels: []string{"self-hosted"}}},
+			matchers:    []LabelMatcher{{Labels: []string{"linux"}}},
 			labels:      []string{"self-hosted", "linux"},
 			shouldMatch: true,
 		},
@@ -83,7 +83,7 @@ func TestReconciler_MatchesLabels(t *testing.T) {
 			name: "multiple matchers one matches",
 			matchers: []LabelMatcher{
 				{Labels: []string{"custom-runner"}},
-				{Labels: []string{"self-hosted"}},
+				{Labels: []string{"linux"}},
 			},
 			labels:      []string{"self-hosted", "linux"},
 			shouldMatch: true,
@@ -95,6 +95,12 @@ func TestReconciler_MatchesLabels(t *testing.T) {
 				{Labels: []string{"special"}},
 			},
 			labels:      []string{"self-hosted", "linux"},
+			shouldMatch: false,
+		},
+		{
+			name:        "missing self-hosted label",
+			matchers:    nil,
+			labels:      []string{"linux", "ubuntu"},
 			shouldMatch: false,
 		},
 		{
@@ -184,24 +190,25 @@ func TestReconciler_FiltersUnmatchedLabels(t *testing.T) {
 	queuedJobs := []ghclient.QueuedJob{
 		{
 			ID:     1,
-			Name:   "self-hosted-job",
+			Name:   "self-hosted-linux-job",
 			Labels: []string{"self-hosted", "linux"},
 		},
 		{
 			ID:     2,
-			Name:   "custom-runner-job",
-			Labels: []string{"custom-runner", "linux"},
+			Name:   "self-hosted-windows-job",
+			Labels: []string{"self-hosted", "windows"},
 		},
 		{
 			ID:     3,
-			Name:   "special-job",
-			Labels: []string{"special", "ubuntu-latest"},
+			Name:   "non-self-hosted-job",
+			Labels: []string{"ubuntu-latest"},
 		},
 	}
 
+	// Match only linux jobs
 	r := &Reconciler{
 		labelMatchers: []LabelMatcher{
-			{Labels: []string{"self-hosted"}},
+			{Labels: []string{"linux"}},
 		},
 	}
 
@@ -212,6 +219,9 @@ func TestReconciler_FiltersUnmatchedLabels(t *testing.T) {
 		}
 	}
 
+	// Should match only job 1 (self-hosted + linux)
+	// Job 2 has self-hosted but not linux
+	// Job 3 doesn't have self-hosted
 	if len(matchedJobs) != 1 {
 		t.Errorf("expected 1 matched job, got %d", len(matchedJobs))
 	}

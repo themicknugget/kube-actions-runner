@@ -171,16 +171,7 @@ func (r *Reconciler) reconcileRepo(ctx context.Context, ghClient *ghclient.Clien
 }
 
 func (r *Reconciler) matchesLabels(labels []string) bool {
-	if len(r.labelMatchers) == 0 {
-		return true
-	}
-
-	for _, matcher := range r.labelMatchers {
-		if matcher.Matches(labels) {
-			return true
-		}
-	}
-	return false
+	return ShouldHandle(labels, r.labelMatchers)
 }
 
 func (r *Reconciler) createRunnerForJob(ctx context.Context, ghClient *ghclient.Client, job ghclient.QueuedJob) error {
