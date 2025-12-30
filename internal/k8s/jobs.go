@@ -379,8 +379,9 @@ func (c *Client) buildDinDPodSpec(config RunnerJobConfig, secretName string) cor
 	}
 
 	return corev1.PodSpec{
-		RestartPolicy: corev1.RestartPolicyNever,
-		NodeSelector:  buildNodeSelector(config.Labels),
+		RestartPolicy:        corev1.RestartPolicyNever,
+		NodeSelector:         buildNodeSelector(config.Labels),
+		ShareProcessNamespace: ptr(true),
 		SecurityContext: &corev1.PodSecurityContext{
 			SeccompProfile: &corev1.SeccompProfile{
 				Type: corev1.SeccompProfileTypeRuntimeDefault,
@@ -391,7 +392,8 @@ func (c *Client) buildDinDPodSpec(config RunnerJobConfig, secretName string) cor
 				Name:  "runner",
 				Image: image,
 				Command: []string{"/bin/sh", "-c"},
-				Args:    []string{"./run.sh --jitconfig \"$RUNNER_JITCONFIG\""},
+				// Run the runner, capture exit code, kill dind sidecar, then exit with original code
+				Args: []string{"./run.sh --jitconfig \"$RUNNER_JITCONFIG\"; exitcode=$?; kill -TERM $(pgrep -f 'dockerd') 2>/dev/null || true; exit $exitcode"},
 				Env: []corev1.EnvVar{
 					{
 						Name: "RUNNER_JITCONFIG",
