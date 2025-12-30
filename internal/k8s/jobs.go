@@ -190,6 +190,23 @@ func buildNodeSelector(labels []string) map[string]string {
 	return nodeSelector
 }
 
+// buildTopologySpreadConstraints returns constraints to spread runner pods across nodes
+// This prevents all pods from landing on the same node during burst scheduling
+func buildTopologySpreadConstraints() []corev1.TopologySpreadConstraint {
+	return []corev1.TopologySpreadConstraint{
+		{
+			MaxSkew:           2,
+			TopologyKey:       "kubernetes.io/hostname",
+			WhenUnsatisfiable: corev1.ScheduleAnyway,
+			LabelSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app": "github-runner",
+				},
+			},
+		},
+	}
+}
+
 func (c *Client) CreateRunnerJob(ctx context.Context, config RunnerJobConfig) error {
 	secretName := fmt.Sprintf("runner-jit-%s", config.Name)
 
@@ -281,8 +298,9 @@ func (c *Client) buildStandardPodSpec(config RunnerJobConfig, secretName string)
 	}
 
 	return corev1.PodSpec{
-		RestartPolicy: corev1.RestartPolicyNever,
-		NodeSelector:  buildNodeSelector(config.Labels),
+		RestartPolicy:             corev1.RestartPolicyNever,
+		NodeSelector:              buildNodeSelector(config.Labels),
+		TopologySpreadConstraints: buildTopologySpreadConstraints(),
 		SecurityContext: &corev1.PodSecurityContext{
 			RunAsNonRoot: ptr(true),
 			RunAsUser:    ptr(int64(1000)),
@@ -331,9 +349,10 @@ func (c *Client) buildUserNSPodSpec(config RunnerJobConfig, secretName string) c
 	}
 
 	return corev1.PodSpec{
-		RestartPolicy: corev1.RestartPolicyNever,
-		NodeSelector:  buildNodeSelector(config.Labels),
-		HostUsers:     ptr(false),
+		RestartPolicy:             corev1.RestartPolicyNever,
+		NodeSelector:              buildNodeSelector(config.Labels),
+		TopologySpreadConstraints: buildTopologySpreadConstraints(),
+		HostUsers:                 ptr(false),
 		SecurityContext: &corev1.PodSecurityContext{
 			RunAsUser: ptr(int64(0)),
 			SeccompProfile: &corev1.SeccompProfile{
@@ -379,9 +398,10 @@ func (c *Client) buildDinDPodSpec(config RunnerJobConfig, secretName string) cor
 	}
 
 	return corev1.PodSpec{
-		RestartPolicy:        corev1.RestartPolicyNever,
-		NodeSelector:         buildNodeSelector(config.Labels),
-		ShareProcessNamespace: ptr(true),
+		RestartPolicy:             corev1.RestartPolicyNever,
+		NodeSelector:              buildNodeSelector(config.Labels),
+		TopologySpreadConstraints: buildTopologySpreadConstraints(),
+		ShareProcessNamespace:     ptr(true),
 		SecurityContext: &corev1.PodSecurityContext{
 			SeccompProfile: &corev1.SeccompProfile{
 				Type: corev1.SeccompProfileTypeRuntimeDefault,
@@ -453,9 +473,10 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 	}
 
 	return corev1.PodSpec{
-		RestartPolicy: corev1.RestartPolicyNever,
-		NodeSelector:  buildNodeSelector(config.Labels),
-		HostUsers:     ptr(false),
+		RestartPolicy:             corev1.RestartPolicyNever,
+		NodeSelector:              buildNodeSelector(config.Labels),
+		TopologySpreadConstraints: buildTopologySpreadConstraints(),
+		HostUsers:                 ptr(false),
 		SecurityContext: &corev1.PodSecurityContext{
 			SeccompProfile: &corev1.SeccompProfile{
 				Type: corev1.SeccompProfileTypeUnconfined,
