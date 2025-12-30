@@ -3,4 +3,4 @@ name: kube-actions-runner
 description: Kubernetes-native GitHub Actions runner scaler
 type: application
 version: 1.0.4
-appVersion: "v1.0.4"
+appVersion: "1.0.4"
