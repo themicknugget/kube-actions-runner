@@ -23,9 +23,9 @@ const (
 )
 
 const (
-	DefaultRunnerImage       = "ghcr.io/actions/actions-runner:2.321.0"
+	DefaultRunnerImage       = "ghcr.io/actions/actions-runner:2.330.0"
 	DefaultDinDRootlessImage = "ghcr.io/actions-runner-controller/actions-runner-controller/actions-runner-dind-rootless:ubuntu-22.04"
-	DefaultDinDSidecarImage  = "docker:27.4.1-dind"
+	DefaultDinDSidecarImage  = "docker:27-dind"
 )
 
 var validRunnerModes = map[RunnerMode]bool{
