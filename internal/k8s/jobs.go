@@ -195,9 +195,9 @@ func buildNodeSelector(labels []string) map[string]string {
 func buildTopologySpreadConstraints() []corev1.TopologySpreadConstraint {
 	return []corev1.TopologySpreadConstraint{
 		{
-			MaxSkew:           2,
+			MaxSkew:           3,
 			TopologyKey:       "kubernetes.io/hostname",
-			WhenUnsatisfiable: corev1.ScheduleAnyway,
+			WhenUnsatisfiable: corev1.DoNotSchedule,
 			LabelSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
 					"app": "github-runner",
