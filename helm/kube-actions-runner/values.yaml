@@ -3,7 +3,7 @@
 ### Image
 image:
   # -- Container image repository for the webhook-scaler
-  repository: webhook-scaler
+  repository: ghcr.io/themicknugget/kube-actions-runner
   # -- Image tag (defaults to Chart appVersion if not set)
   tag: ""
   # -- Image pull policy
@@ -24,8 +24,8 @@ replicaCount: 1
 
 ### Config
 config:
-  # -- Runner mode: "repository" or "organization"
-  runnerMode: "repository"
+  # -- Runner mode: "standard", "userns", "dind", or "dind-rootless"
+  runnerMode: "dind-rootless"
 
   # -- Label matchers for filtering workflow jobs (comma-separated)
   # Only jobs with ALL specified labels will trigger runner creation
@@ -47,18 +47,41 @@ config:
   # -- Listen address for the webhook server
   listenAddr: ":8080"
 
+### Webhook Auto-Registration
+# When enabled, the scaler will automatically discover repositories with
+# self-hosted runner workflows and register webhooks on them.
+webhookAutoRegister:
+  # -- Enable automatic webhook registration
+  # When true, the scaler scans GitHub for repos with self-hosted workflows
+  # and automatically creates/updates webhooks.
+  enabled: false
+
+  # -- The public URL where GitHub can reach the webhook endpoint
+  # Required when webhookAutoRegister.enabled is true
+  # Example: "https://kube-actions-runner.yourdomain.com/webhook"
+  webhookURL: ""
+
+  # -- How often to rescan for new repositories/workflows
+  # Set to "0" to only scan on startup
+  # Example: "1h", "30m", "6h"
+  syncInterval: "1h"
+
 ### Secrets
 secrets:
   # -- Use an existing secret instead of creating one
   # If set, the chart will not create a Secret resource
   existingSecret: ""
 
-  # -- GitHub webhook secret (required if existingSecret is not set)
-  # Used to validate incoming webhook payloads
+  # -- GitHub webhook secret for validating incoming webhook payloads
+  # OPTIONAL when webhookAutoRegister.enabled is true (will be auto-generated)
+  # REQUIRED when webhookAutoRegister.enabled is false
   webhookSecret: ""
 
   # -- GitHub token with permissions to create JIT runner configs
-  # Required scopes: admin:org (for org runners) or repo (for repo runners)
+  # Required scopes for fine-grained PAT:
+  #   - Actions: Read and write
+  #   - Administration: Read and write
+  #   - (If webhookAutoRegister.enabled) Webhooks: Read and write
   githubToken: ""
 
 ### Resources

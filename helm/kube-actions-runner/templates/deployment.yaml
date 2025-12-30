@@ -42,16 +42,29 @@ spec:
               containerPort: 8080
               protocol: TCP
           env:
-            - name: WEBHOOK_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "kube-actions-runner.secretName" . }}
-                  key: webhook-secret
             - name: GITHUB_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ include "kube-actions-runner.secretName" . }}
                   key: github-token
+            {{- if .Values.webhookAutoRegister.enabled }}
+            - name: WEBHOOK_AUTO_REGISTER
+              value: "true"
+            - name: WEBHOOK_URL
+              value: {{ .Values.webhookAutoRegister.webhookURL | quote }}
+            {{- if .Values.webhookAutoRegister.syncInterval }}
+            - name: WEBHOOK_SYNC_INTERVAL
+              value: {{ .Values.webhookAutoRegister.syncInterval | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if or (not .Values.webhookAutoRegister.enabled) .Values.secrets.webhookSecret }}
+            - name: WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kube-actions-runner.secretName" . }}
+                  key: webhook-secret
+                  optional: {{ .Values.webhookAutoRegister.enabled }}
+            {{- end }}
             - name: LISTEN_ADDR
               value: {{ .Values.config.listenAddr | quote }}
             - name: RUNNER_NAMESPACE
@@ -67,7 +80,7 @@ spec:
               value: {{ .Values.config.labelMatchers | quote }}
             {{- end }}
             {{- if .Values.config.ttlSeconds }}
-            - name: TTL_SECONDS
+            - name: JOB_TTL_SECONDS
               value: {{ .Values.config.ttlSeconds | quote }}
             {{- end }}
             {{- if .Values.config.runnerGroupId }}

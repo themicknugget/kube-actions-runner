@@ -5,6 +5,7 @@ A Kubernetes-native webhook scaler for GitHub Actions self-hosted runners. Suppo
 ## Features
 
 - **Multi-repo support without GitHub Organization** - Single deployment handles webhooks from any number of repositories
+- **Automatic webhook registration** - Discovers repos with self-hosted workflows and auto-registers webhooks
 - **Ephemeral runners with JIT configuration** - Runners register on-demand and auto-deregister after job completion
 - **Four security modes** - standard, userns, dind, dind-rootless
 - **Auto-cleanup via Kubernetes Job TTL** - Completed jobs automatically deleted after 5 minutes
@@ -18,6 +19,7 @@ A Kubernetes-native webhook scaler for GitHub Actions self-hosted runners. Suppo
 - **GitHub fine-grained PAT** with the following repository permissions:
   - Actions: Read and write
   - Administration: Read and write
+  - Webhooks: Read and write (only if using automatic webhook registration)
 - **Ingress** - Cloudflare Tunnel recommended (or any ingress that can route to the kube-actions-runner service)
 
 ### Installation
@@ -72,8 +74,11 @@ See [GitHub Webhook Setup](#github-webhook-setup) below.
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `WEBHOOK_SECRET` | Yes | - | HMAC-SHA256 secret for webhook validation |
 | `GITHUB_TOKEN` | Yes | - | Fine-grained PAT with Actions + Administration permissions |
+| `WEBHOOK_SECRET` | Conditional | - | HMAC-SHA256 secret for webhook validation (auto-generated if `WEBHOOK_AUTO_REGISTER=true`) |
+| `WEBHOOK_AUTO_REGISTER` | No | `false` | Enable automatic webhook discovery and registration |
+| `WEBHOOK_URL` | Conditional | - | Public URL for webhook endpoint (required if `WEBHOOK_AUTO_REGISTER=true`) |
+| `WEBHOOK_SYNC_INTERVAL` | No | `0` | How often to rescan for new repos (e.g., `1h`, `30m`). `0` = startup only |
 | `RUNNER_MODE` | No | `dind-rootless` | Runner mode: `standard`, `userns`, `dind`, or `dind-rootless` |
 | `RUNNER_IMAGE` | No | Mode-dependent | Override default runner image |
 | `DIND_IMAGE` | No | `docker:dind` | Docker-in-Docker sidecar image (dind mode only) |
@@ -108,6 +113,33 @@ If `LABEL_MATCHERS` is not set, the scaler handles all jobs with the `self-hoste
 | `dind-rootless` | `ghcr.io/actions/actions-runner-dind-rootless:latest` |
 
 ### GitHub Webhook Setup
+
+There are two ways to configure webhooks: automatic or manual.
+
+#### Option A: Automatic Webhook Registration (Recommended)
+
+Enable automatic discovery and registration of webhooks. The scaler will:
+1. Scan all repositories accessible by your GitHub token
+2. Find workflows containing `runs-on: [self-hosted, ...]`
+3. Automatically create/update webhooks on those repositories
+
+To enable, set these environment variables:
+```bash
+WEBHOOK_AUTO_REGISTER=true
+WEBHOOK_URL=https://kube-actions-runner.yourdomain.com/webhook
+WEBHOOK_SYNC_INTERVAL=1h  # Optional: rescan every hour for new repos
+```
+
+**Benefits:**
+- Zero manual webhook configuration
+- Webhook secret is auto-generated (no need to manage secrets)
+- New repos with self-hosted workflows are discovered automatically
+- Just add `runs-on: [self-hosted, ...]` to your workflow and it works
+
+**Requirements:**
+- GitHub PAT must have **Webhooks: Read and write** permission
+
+#### Option B: Manual Webhook Setup
 
 1. Go to your repository **Settings > Webhooks**
 2. Click **Add webhook**

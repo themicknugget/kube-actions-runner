@@ -4,37 +4,77 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/kube-actions-runner/kube-actions-runner/internal/k8s"
 )
 
 type Config struct {
-	WebhookSecret string
+	// Webhook configuration
+	WebhookSecret       string
+	WebhookAutoRegister bool
+	WebhookURL          string
+	WebhookSyncInterval time.Duration
+
+	// GitHub configuration
 	GitHubToken   string
-	Namespace     string
+	RunnerGroupID int64
+
+	// Kubernetes configuration
+	Namespace string
+
+	// Runner configuration
 	LabelMatchers string
-	Port          string
 	RunnerMode    k8s.RunnerMode
 	RunnerImage   string
 	DindImage     string
 	TTLSeconds    int32
-	RunnerGroupID int64
+
+	// Server configuration
+	Port string
 }
 
 func Load() (*Config, error) {
 	cfg := &Config{}
-
-	cfg.WebhookSecret = os.Getenv("WEBHOOK_SECRET")
-	if cfg.WebhookSecret == "" {
-		return nil, fmt.Errorf("WEBHOOK_SECRET environment variable is required")
-	}
 
 	cfg.GitHubToken = os.Getenv("GITHUB_TOKEN")
 	if cfg.GitHubToken == "" {
 		return nil, fmt.Errorf("GITHUB_TOKEN environment variable is required")
 	}
 
-	cfg.Namespace = os.Getenv("NAMESPACE")
+	// Webhook auto-registration
+	cfg.WebhookAutoRegister = os.Getenv("WEBHOOK_AUTO_REGISTER") == "true"
+	cfg.WebhookURL = os.Getenv("WEBHOOK_URL")
+
+	if cfg.WebhookAutoRegister {
+		if cfg.WebhookURL == "" {
+			return nil, fmt.Errorf("WEBHOOK_URL is required when WEBHOOK_AUTO_REGISTER is enabled")
+		}
+		// Webhook secret is optional when auto-registering (will be generated)
+		cfg.WebhookSecret = os.Getenv("WEBHOOK_SECRET")
+
+		// Parse sync interval
+		syncIntervalStr := os.Getenv("WEBHOOK_SYNC_INTERVAL")
+		if syncIntervalStr != "" {
+			interval, err := time.ParseDuration(syncIntervalStr)
+			if err != nil {
+				return nil, fmt.Errorf("invalid WEBHOOK_SYNC_INTERVAL: %s", syncIntervalStr)
+			}
+			cfg.WebhookSyncInterval = interval
+		}
+	} else {
+		// Manual mode requires webhook secret
+		cfg.WebhookSecret = os.Getenv("WEBHOOK_SECRET")
+		if cfg.WebhookSecret == "" {
+			return nil, fmt.Errorf("WEBHOOK_SECRET environment variable is required (or enable WEBHOOK_AUTO_REGISTER)")
+		}
+	}
+
+	// Check both RUNNER_NAMESPACE (helm) and NAMESPACE (legacy) for compatibility
+	cfg.Namespace = os.Getenv("RUNNER_NAMESPACE")
+	if cfg.Namespace == "" {
+		cfg.Namespace = os.Getenv("NAMESPACE")
+	}
 	if cfg.Namespace == "" {
 		cfg.Namespace = "default"
 	}
