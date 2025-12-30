@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/google/go-github/v57/github"
@@ -25,6 +26,7 @@ type Scaler struct {
 	dindImage       string
 	ttlSeconds      int32
 	skipNodeCheck   bool
+	jobCreateMu     sync.Mutex // Serializes job creation for better topology spread
 }
 
 type Config struct {
@@ -242,5 +244,17 @@ func (s *Scaler) createRunnerJob(ctx context.Context, name, jitConfig, owner, re
 		TTLSeconds:  s.ttlSeconds,
 	}
 
-	return s.k8sClient.CreateRunnerJob(ctx, config)
+	// Serialize job creation to allow scheduler to see previous pods
+	// This helps TopologySpreadConstraints work correctly during burst scheduling
+	s.jobCreateMu.Lock()
+	defer s.jobCreateMu.Unlock()
+
+	err := s.k8sClient.CreateRunnerJob(ctx, config)
+	if err != nil {
+		return err
+	}
+
+	// Small delay to let scheduler process the pod before next job is created
+	time.Sleep(150 * time.Millisecond)
+	return nil
 }
