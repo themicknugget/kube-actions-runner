@@ -94,6 +94,7 @@ func main() {
 		"job_ttl_seconds", cfg.TTLSeconds,
 		"runner_group_id", cfg.RunnerGroupID,
 		"webhook_auto_register", cfg.WebhookAutoRegister,
+		"skip_node_check", cfg.SkipNodeCheck,
 	)
 
 	ghClient := ghclient.NewClient(cfg.GitHubToken, cfg.RunnerGroupID)
@@ -114,6 +115,7 @@ func main() {
 		RunnerImage:   cfg.RunnerImage,
 		DindImage:     cfg.DindImage,
 		TTLSeconds:    cfg.TTLSeconds,
+		SkipNodeCheck: cfg.SkipNodeCheck,
 	})
 
 	r := chi.NewRouter()

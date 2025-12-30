@@ -47,6 +47,12 @@ config:
   # -- Listen address for the webhook server
   listenAddr: ":8080"
 
+  # -- Skip node availability check for architecture labels
+  # When false (default), jobs requiring specific architectures will only be created
+  # if matching nodes are available. When true, jobs are always created regardless
+  # of node availability.
+  skipNodeCheck: false
+
 ### Webhook Auto-Registration
 # When enabled, the scaler will automatically discover repositories with
 # self-hosted runner workflows and register webhooks on them.

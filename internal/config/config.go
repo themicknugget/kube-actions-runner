@@ -30,6 +30,9 @@ type Config struct {
 	DindImage     string
 	TTLSeconds    int32
 
+	// Node configuration
+	SkipNodeCheck bool
+
 	// Server configuration
 	Port string
 }
@@ -127,6 +130,9 @@ func Load() (*Config, error) {
 	} else {
 		cfg.RunnerGroupID = 1
 	}
+
+	// Node availability check configuration
+	cfg.SkipNodeCheck = os.Getenv("SKIP_NODE_CHECK") == "true"
 
 	return cfg, nil
 }

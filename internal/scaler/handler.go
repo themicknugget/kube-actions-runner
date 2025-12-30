@@ -24,6 +24,7 @@ type Scaler struct {
 	runnerImage   string
 	dindImage     string
 	ttlSeconds    int32
+	skipNodeCheck bool
 }
 
 type Config struct {
@@ -36,6 +37,7 @@ type Config struct {
 	RunnerImage   string
 	DindImage     string
 	TTLSeconds    int32
+	SkipNodeCheck bool
 }
 
 func NewScaler(cfg Config) *Scaler {
@@ -49,6 +51,7 @@ func NewScaler(cfg Config) *Scaler {
 		runnerImage:   cfg.RunnerImage,
 		dindImage:     cfg.DindImage,
 		ttlSeconds:    cfg.TTLSeconds,
+		skipNodeCheck: cfg.SkipNodeCheck,
 	}
 }
 
@@ -120,6 +123,24 @@ func (s *Scaler) processQueuedJob(ctx context.Context, w http.ResponseWriter, ev
 		log.Info("job no longer queued, skipping")
 		respond(http.StatusOK)
 		return
+	}
+
+	// Check node availability for required architecture
+	if !s.skipNodeCheck {
+		requiredArch := k8s.GetRequiredArchFromLabels(jobLabels)
+		if requiredArch != "" {
+			hasNodes, err := s.k8sClient.HasNodesForArchitecture(ctx, requiredArch)
+			if err != nil {
+				log.Error("failed to check node availability", "error", err, "arch", requiredArch)
+				respondError(http.StatusInternalServerError, "failed to check node availability")
+				return
+			}
+			if !hasNodes {
+				log.Warn("no nodes available for architecture, job will remain queued in GitHub", "arch", requiredArch)
+				respond(http.StatusOK)
+				return
+			}
+		}
 	}
 
 	runnerName := fmt.Sprintf("runner-%d", jobID)

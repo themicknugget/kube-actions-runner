@@ -900,3 +900,144 @@ func TestBuildPodSpec_NodeSelectorAcrossModes(t *testing.T) {
 		})
 	}
 }
+
+func TestGetRequiredArchFromLabels(t *testing.T) {
+	tests := []struct {
+		name     string
+		labels   []string
+		expected string
+	}{
+		{
+			name:     "arm64 label returns arm64",
+			labels:   []string{"self-hosted", "linux", "arm64"},
+			expected: "arm64",
+		},
+		{
+			name:     "aarch64 label returns arm64",
+			labels:   []string{"self-hosted", "linux", "aarch64"},
+			expected: "arm64",
+		},
+		{
+			name:     "amd64 label returns amd64",
+			labels:   []string{"self-hosted", "linux", "amd64"},
+			expected: "amd64",
+		},
+		{
+			name:     "x64 label returns amd64",
+			labels:   []string{"self-hosted", "linux", "x64"},
+			expected: "amd64",
+		},
+		{
+			name:     "x86_64 label returns amd64",
+			labels:   []string{"self-hosted", "linux", "x86_64"},
+			expected: "amd64",
+		},
+		{
+			name:     "mixed case ARM64 returns arm64",
+			labels:   []string{"self-hosted", "linux", "ARM64"},
+			expected: "arm64",
+		},
+		{
+			name:     "labels without arch returns empty string",
+			labels:   []string{"self-hosted", "linux"},
+			expected: "",
+		},
+		{
+			name:     "empty labels returns empty string",
+			labels:   []string{},
+			expected: "",
+		},
+		{
+			name:     "nil labels returns empty string",
+			labels:   nil,
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := GetRequiredArchFromLabels(tt.labels)
+			if result != tt.expected {
+				t.Errorf("GetRequiredArchFromLabels(%v) = %q, want %q", tt.labels, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsNodeReady(t *testing.T) {
+	tests := []struct {
+		name     string
+		node     *corev1.Node
+		expected bool
+	}{
+		{
+			name: "node with Ready=True condition returns true",
+			node: &corev1.Node{
+				Status: corev1.NodeStatus{
+					Conditions: []corev1.NodeCondition{
+						{
+							Type:   corev1.NodeReady,
+							Status: corev1.ConditionTrue,
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "node with Ready=False condition returns false",
+			node: &corev1.Node{
+				Status: corev1.NodeStatus{
+					Conditions: []corev1.NodeCondition{
+						{
+							Type:   corev1.NodeReady,
+							Status: corev1.ConditionFalse,
+						},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "node with Ready=Unknown condition returns false",
+			node: &corev1.Node{
+				Status: corev1.NodeStatus{
+					Conditions: []corev1.NodeCondition{
+						{
+							Type:   corev1.NodeReady,
+							Status: corev1.ConditionUnknown,
+						},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "node with no Ready condition returns false",
+			node: &corev1.Node{
+				Status: corev1.NodeStatus{
+					Conditions: []corev1.NodeCondition{
+						{
+							Type:   corev1.NodeMemoryPressure,
+							Status: corev1.ConditionFalse,
+						},
+						{
+							Type:   corev1.NodeDiskPressure,
+							Status: corev1.ConditionFalse,
+						},
+					},
+				},
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isNodeReady(tt.node)
+			if result != tt.expected {
+				t.Errorf("isNodeReady() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}

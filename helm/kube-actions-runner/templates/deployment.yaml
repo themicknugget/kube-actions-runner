@@ -95,6 +95,10 @@ spec:
             - name: DIND_IMAGE
               value: {{ .Values.config.dindImage | quote }}
             {{- end }}
+            {{- if .Values.config.skipNodeCheck }}
+            - name: SKIP_NODE_CHECK
+              value: "true"
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           livenessProbe:

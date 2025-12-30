@@ -486,3 +486,60 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 		),
 	}
 }
+
+// GetAvailableArchitectures lists all nodes in the cluster and returns a map of
+// available architectures based on the kubernetes.io/arch label.
+// Only includes nodes that are in Ready condition.
+func (c *Client) GetAvailableArchitectures(ctx context.Context) (map[string]bool, error) {
+	nodes, err := c.clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list nodes: %w", err)
+	}
+
+	archs := make(map[string]bool)
+	for _, node := range nodes.Items {
+		// Check if node is Ready
+		if !isNodeReady(&node) {
+			continue
+		}
+
+		// Extract architecture label
+		if arch, ok := node.Labels["kubernetes.io/arch"]; ok {
+			archs[arch] = true
+		}
+	}
+
+	return archs, nil
+}
+
+// isNodeReady checks if a node has the Ready condition set to True
+func isNodeReady(node *corev1.Node) bool {
+	for _, condition := range node.Status.Conditions {
+		if condition.Type == corev1.NodeReady {
+			return condition.Status == corev1.ConditionTrue
+		}
+	}
+	return false
+}
+
+// HasNodesForArchitecture checks if the cluster has any Ready nodes
+// with the specified architecture.
+func (c *Client) HasNodesForArchitecture(ctx context.Context, arch string) (bool, error) {
+	archs, err := c.GetAvailableArchitectures(ctx)
+	if err != nil {
+		return false, err
+	}
+	return archs[arch], nil
+}
+
+// GetRequiredArchFromLabels extracts the Kubernetes architecture value from
+// workflow labels. Returns empty string if no architecture label is found.
+func GetRequiredArchFromLabels(labels []string) string {
+	for _, label := range labels {
+		lowerLabel := strings.ToLower(label)
+		if arch, ok := archLabelMap[lowerLabel]; ok {
+			return arch
+		}
+	}
+	return ""
+}
