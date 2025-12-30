@@ -47,6 +47,13 @@ spec:
                 secretKeyRef:
                   name: {{ include "kube-actions-runner.secretName" . }}
                   key: github-token
+            {{- if .Values.secrets.githubTokens }}
+            - name: GITHUB_TOKENS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kube-actions-runner.secretName" . }}
+                  key: github-tokens
+            {{- end }}
             {{- if .Values.webhookAutoRegister.enabled }}
             - name: WEBHOOK_AUTO_REGISTER
               value: "true"

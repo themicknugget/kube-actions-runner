@@ -15,43 +15,43 @@ import (
 )
 
 type Scaler struct {
-	webhookSecret []byte
-	labelMatchers []LabelMatcher
-	ghClient      *ghclient.Client
-	k8sClient     *k8s.Client
-	logger        *logger.Logger
-	runnerMode    k8s.RunnerMode
-	runnerImage   string
-	dindImage     string
-	ttlSeconds    int32
-	skipNodeCheck bool
+	webhookSecret   []byte
+	labelMatchers   []LabelMatcher
+	ghClientFactory *ghclient.ClientFactory
+	k8sClient       *k8s.Client
+	logger          *logger.Logger
+	runnerMode      k8s.RunnerMode
+	runnerImage     string
+	dindImage       string
+	ttlSeconds      int32
+	skipNodeCheck   bool
 }
 
 type Config struct {
-	WebhookSecret []byte
-	LabelMatchers []LabelMatcher
-	GHClient      *ghclient.Client
-	K8sClient     *k8s.Client
-	Logger        *logger.Logger
-	RunnerMode    k8s.RunnerMode
-	RunnerImage   string
-	DindImage     string
-	TTLSeconds    int32
-	SkipNodeCheck bool
+	WebhookSecret   []byte
+	LabelMatchers   []LabelMatcher
+	GHClientFactory *ghclient.ClientFactory
+	K8sClient       *k8s.Client
+	Logger          *logger.Logger
+	RunnerMode      k8s.RunnerMode
+	RunnerImage     string
+	DindImage       string
+	TTLSeconds      int32
+	SkipNodeCheck   bool
 }
 
 func NewScaler(cfg Config) *Scaler {
 	return &Scaler{
-		webhookSecret: cfg.WebhookSecret,
-		labelMatchers: cfg.LabelMatchers,
-		ghClient:      cfg.GHClient,
-		k8sClient:     cfg.K8sClient,
-		logger:        cfg.Logger,
-		runnerMode:    cfg.RunnerMode,
-		runnerImage:   cfg.RunnerImage,
-		dindImage:     cfg.DindImage,
-		ttlSeconds:    cfg.TTLSeconds,
-		skipNodeCheck: cfg.SkipNodeCheck,
+		webhookSecret:   cfg.WebhookSecret,
+		labelMatchers:   cfg.LabelMatchers,
+		ghClientFactory: cfg.GHClientFactory,
+		k8sClient:       cfg.K8sClient,
+		logger:          cfg.Logger,
+		runnerMode:      cfg.RunnerMode,
+		runnerImage:     cfg.RunnerImage,
+		dindImage:       cfg.DindImage,
+		ttlSeconds:      cfg.TTLSeconds,
+		skipNodeCheck:   cfg.SkipNodeCheck,
 	}
 }
 
@@ -99,6 +99,15 @@ func (s *Scaler) processQueuedJob(ctx context.Context, w http.ResponseWriter, ev
 
 	log.Info("processing workflow job", "labels", jobLabels)
 
+	// Get GitHub client for this owner
+	ghClient, err := s.ghClientFactory.GetClientForOwner(owner)
+	if err != nil {
+		log.Error("no token configured for owner", "error", err)
+		// Return 200 to prevent GitHub from retrying - we can't handle this owner
+		respond(http.StatusOK)
+		return
+	}
+
 	jobName := fmt.Sprintf("runner-%d", jobID)
 
 	exists, err := s.k8sClient.JobExists(ctx, jobName)
@@ -113,7 +122,7 @@ func (s *Scaler) processQueuedJob(ctx context.Context, w http.ResponseWriter, ev
 		return
 	}
 
-	stillQueued, err := s.ghClient.IsJobQueued(ctx, owner, repo, jobID)
+	stillQueued, err := ghClient.IsJobQueued(ctx, owner, repo, jobID)
 	if err != nil {
 		log.Error("failed to verify job status", "error", err)
 		respondError(http.StatusInternalServerError, "failed to verify job status")
@@ -144,7 +153,7 @@ func (s *Scaler) processQueuedJob(ctx context.Context, w http.ResponseWriter, ev
 	}
 
 	runnerName := fmt.Sprintf("runner-%d", jobID)
-	jitConfig, err := s.ghClient.GenerateJITConfig(ctx, owner, repo, runnerName, jobLabels)
+	jitConfig, err := ghClient.GenerateJITConfig(ctx, owner, repo, runnerName, jobLabels)
 	if err != nil {
 		log.Error("failed to generate JIT config", "error", err)
 		respondError(http.StatusInternalServerError, "failed to generate JIT config")

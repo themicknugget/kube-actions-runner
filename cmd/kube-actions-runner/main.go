@@ -10,14 +10,15 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/kube-actions-runner/kube-actions-runner/internal/config"
 	"github.com/kube-actions-runner/kube-actions-runner/internal/discovery"
 	ghclient "github.com/kube-actions-runner/kube-actions-runner/internal/github"
 	"github.com/kube-actions-runner/kube-actions-runner/internal/k8s"
 	"github.com/kube-actions-runner/kube-actions-runner/internal/logger"
 	"github.com/kube-actions-runner/kube-actions-runner/internal/scaler"
+	"github.com/kube-actions-runner/kube-actions-runner/internal/tokens"
 	"github.com/kube-actions-runner/kube-actions-runner/internal/webhook"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
@@ -27,6 +28,28 @@ func main() {
 	if err != nil {
 		log.Error("failed to load configuration", "error", err)
 		os.Exit(1)
+	}
+
+	// Create token registry
+	tokenRegistry, err := tokens.NewRegistry(cfg.GitHubTokens, cfg.GitHubToken)
+	if err != nil {
+		log.Error("failed to create token registry", "error", err)
+		os.Exit(1)
+	}
+
+	// Log configured owners
+	if tokenRegistry.HasMultipleTokens() {
+		log.Info("token registry initialized with multiple owners",
+			"owners", tokenRegistry.GetConfiguredOwners(),
+			"has_default", tokenRegistry.HasDefaultToken(),
+		)
+	} else if tokenRegistry.HasDefaultToken() {
+		log.Info("token registry initialized with single default token")
+	} else {
+		owners := tokenRegistry.GetConfiguredOwners()
+		if len(owners) > 0 {
+			log.Info("token registry initialized with single owner", "owner", owners[0])
+		}
 	}
 
 	labelMatchers := scaler.ParseLabelMatchers(cfg.LabelMatchers)
@@ -43,7 +66,7 @@ func main() {
 		)
 
 		webhookManager, err = webhook.NewManager(webhook.Config{
-			Token:         cfg.GitHubToken,
+			TokenRegistry: tokenRegistry,
 			WebhookURL:    cfg.WebhookURL,
 			WebhookSecret: cfg.WebhookSecret, // Empty = auto-generate
 			Logger:        log,
@@ -58,7 +81,7 @@ func main() {
 
 		// Run initial discovery and registration
 		ctx := context.Background()
-		discoverer := discovery.NewDiscoverer(cfg.GitHubToken, log)
+		discoverer := discovery.NewDiscoverer(tokenRegistry, log)
 
 		results, err := webhookManager.SyncWebhooks(ctx, discoverer)
 		if err != nil {
@@ -97,7 +120,7 @@ func main() {
 		"skip_node_check", cfg.SkipNodeCheck,
 	)
 
-	ghClient := ghclient.NewClient(cfg.GitHubToken, cfg.RunnerGroupID)
+	ghClientFactory := ghclient.NewClientFactory(tokenRegistry, cfg.RunnerGroupID)
 
 	k8sClient, err := k8s.NewClient(cfg.Namespace)
 	if err != nil {
@@ -106,16 +129,16 @@ func main() {
 	}
 
 	s := scaler.NewScaler(scaler.Config{
-		WebhookSecret: []byte(webhookSecret),
-		LabelMatchers: labelMatchers,
-		GHClient:      ghClient,
-		K8sClient:     k8sClient,
-		Logger:        log,
-		RunnerMode:    cfg.RunnerMode,
-		RunnerImage:   cfg.RunnerImage,
-		DindImage:     cfg.DindImage,
-		TTLSeconds:    cfg.TTLSeconds,
-		SkipNodeCheck: cfg.SkipNodeCheck,
+		WebhookSecret:   []byte(webhookSecret),
+		LabelMatchers:   labelMatchers,
+		GHClientFactory: ghClientFactory,
+		K8sClient:       k8sClient,
+		Logger:          log,
+		RunnerMode:      cfg.RunnerMode,
+		RunnerImage:     cfg.RunnerImage,
+		DindImage:       cfg.DindImage,
+		TTLSeconds:      cfg.TTLSeconds,
+		SkipNodeCheck:   cfg.SkipNodeCheck,
 	})
 
 	r := chi.NewRouter()
@@ -150,7 +173,7 @@ func main() {
 			ticker := time.NewTicker(cfg.WebhookSyncInterval)
 			defer ticker.Stop()
 
-			discoverer := discovery.NewDiscoverer(cfg.GitHubToken, log)
+			discoverer := discovery.NewDiscoverer(tokenRegistry, log)
 
 			for {
 				select {

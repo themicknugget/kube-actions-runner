@@ -17,7 +17,8 @@ type Config struct {
 	WebhookSyncInterval time.Duration
 
 	// GitHub configuration
-	GitHubToken   string
+	GitHubToken   string // Single token for backwards compatibility (GITHUB_TOKEN)
+	GitHubTokens  string // JSON array of owner-token pairs (GITHUB_TOKENS)
 	RunnerGroupID int64
 
 	// Kubernetes configuration
@@ -40,9 +41,13 @@ type Config struct {
 func Load() (*Config, error) {
 	cfg := &Config{}
 
+	// Load GitHub tokens - GITHUB_TOKENS takes precedence if set
+	cfg.GitHubTokens = os.Getenv("GITHUB_TOKENS")
 	cfg.GitHubToken = os.Getenv("GITHUB_TOKEN")
-	if cfg.GitHubToken == "" {
-		return nil, fmt.Errorf("GITHUB_TOKEN environment variable is required")
+
+	// At least one token source is required
+	if cfg.GitHubTokens == "" && cfg.GitHubToken == "" {
+		return nil, fmt.Errorf("GITHUB_TOKEN or GITHUB_TOKENS environment variable is required")
 	}
 
 	// Webhook auto-registration

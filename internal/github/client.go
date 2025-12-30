@@ -7,13 +7,16 @@ import (
 
 	"github.com/google/go-github/v57/github"
 	"github.com/kube-actions-runner/kube-actions-runner/internal/metrics"
+	"github.com/kube-actions-runner/kube-actions-runner/internal/tokens"
 )
 
 type Client struct {
 	client        *github.Client
 	runnerGroupID int64
+	token         string
 }
 
+// NewClient creates a new GitHub client with the given token and runner group ID
 func NewClient(token string, runnerGroupID int64) *Client {
 	if runnerGroupID == 0 {
 		runnerGroupID = 1
@@ -21,7 +24,39 @@ func NewClient(token string, runnerGroupID int64) *Client {
 	return &Client{
 		client:        github.NewClient(nil).WithAuthToken(token),
 		runnerGroupID: runnerGroupID,
+		token:         token,
 	}
+}
+
+// ClientFactory creates GitHub clients for specific owners using a token registry
+type ClientFactory struct {
+	registry      *tokens.Registry
+	runnerGroupID int64
+}
+
+// NewClientFactory creates a new client factory with the given token registry
+func NewClientFactory(registry *tokens.Registry, runnerGroupID int64) *ClientFactory {
+	if runnerGroupID == 0 {
+		runnerGroupID = 1
+	}
+	return &ClientFactory{
+		registry:      registry,
+		runnerGroupID: runnerGroupID,
+	}
+}
+
+// GetClientForOwner returns a GitHub client configured with the appropriate token for the owner
+func (f *ClientFactory) GetClientForOwner(owner string) (*Client, error) {
+	token, err := f.registry.GetTokenForOwner(owner)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get token for owner %s: %w", owner, err)
+	}
+	return NewClient(token, f.runnerGroupID), nil
+}
+
+// GetRegistry returns the underlying token registry
+func (f *ClientFactory) GetRegistry() *tokens.Registry {
+	return f.registry
 }
 
 func (c *Client) recordAPIMetrics(endpoint string, startTime time.Time, resp *github.Response, err error) {

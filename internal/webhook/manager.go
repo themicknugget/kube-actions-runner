@@ -10,11 +10,12 @@ import (
 	"github.com/google/go-github/v57/github"
 	"github.com/kube-actions-runner/kube-actions-runner/internal/discovery"
 	"github.com/kube-actions-runner/kube-actions-runner/internal/logger"
+	"github.com/kube-actions-runner/kube-actions-runner/internal/tokens"
 )
 
 // Manager handles webhook registration and management
 type Manager struct {
-	client        *github.Client
+	registry      *tokens.Registry
 	logger        *logger.Logger
 	webhookURL    string
 	webhookSecret string
@@ -22,7 +23,7 @@ type Manager struct {
 
 // Config holds configuration for the webhook manager
 type Config struct {
-	Token         string
+	TokenRegistry *tokens.Registry
 	WebhookURL    string
 	WebhookSecret string // If empty, will be auto-generated
 	Logger        *logger.Logger
@@ -41,7 +42,7 @@ func NewManager(cfg Config) (*Manager, error) {
 	}
 
 	return &Manager{
-		client:        github.NewClient(nil).WithAuthToken(cfg.Token),
+		registry:      cfg.TokenRegistry,
 		logger:        cfg.Logger,
 		webhookURL:    cfg.WebhookURL,
 		webhookSecret: secret,
@@ -76,7 +77,22 @@ func (m *Manager) RegisterWebhooks(ctx context.Context, repos []discovery.RepoIn
 	var results []RegisterResult
 
 	for _, repo := range repos {
-		result := m.registerWebhook(ctx, repo.Owner, repo.Name)
+		// Use the token from RepoInfo if available, otherwise lookup from registry
+		token := repo.Token
+		if token == "" {
+			var err error
+			token, err = m.registry.GetTokenForOwner(repo.Owner)
+			if err != nil {
+				results = append(results, RegisterResult{
+					Repo:  repo.FullName,
+					Error: fmt.Errorf("no token configured for owner %s: %w", repo.Owner, err),
+				})
+				m.logger.Error("no token configured for owner", "repo", repo.FullName, "owner", repo.Owner)
+				continue
+			}
+		}
+
+		result := m.registerWebhookWithToken(ctx, repo.Owner, repo.Name, token)
 		results = append(results, result)
 
 		// Rate limit protection
@@ -86,13 +102,15 @@ func (m *Manager) RegisterWebhooks(ctx context.Context, repos []discovery.RepoIn
 	return results
 }
 
-// registerWebhook registers or updates a webhook for a single repository
-func (m *Manager) registerWebhook(ctx context.Context, owner, repo string) RegisterResult {
+// registerWebhookWithToken registers or updates a webhook for a single repository using the provided token
+func (m *Manager) registerWebhookWithToken(ctx context.Context, owner, repo, token string) RegisterResult {
 	fullName := fmt.Sprintf("%s/%s", owner, repo)
 	result := RegisterResult{Repo: fullName}
 
+	client := github.NewClient(nil).WithAuthToken(token)
+
 	// List existing webhooks
-	hooks, resp, err := m.client.Repositories.ListHooks(ctx, owner, repo, nil)
+	hooks, resp, err := client.Repositories.ListHooks(ctx, owner, repo, nil)
 	if err != nil {
 		if resp != nil {
 			switch resp.StatusCode {
@@ -134,7 +152,7 @@ func (m *Manager) registerWebhook(ctx context.Context, owner, repo string) Regis
 	if existingHook != nil {
 		// Check if update is needed (secret can't be compared, so we always update to ensure it's current)
 		// Only update if URL matches but we want to ensure secret is correct
-		_, _, err := m.client.Repositories.EditHook(ctx, owner, repo, existingHook.GetID(), &github.Hook{
+		_, _, err := client.Repositories.EditHook(ctx, owner, repo, existingHook.GetID(), &github.Hook{
 			Config: map[string]interface{}{
 				"content_type": "json",
 				"url":          m.webhookURL,
@@ -166,7 +184,7 @@ func (m *Manager) registerWebhook(ctx context.Context, owner, repo string) Regis
 		},
 	}
 
-	_, createResp, err := m.client.Repositories.CreateHook(ctx, owner, repo, hook)
+	_, createResp, err := client.Repositories.CreateHook(ctx, owner, repo, hook)
 	if err != nil {
 		if createResp != nil {
 			switch createResp.StatusCode {

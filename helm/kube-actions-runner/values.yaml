@@ -78,17 +78,28 @@ secrets:
   # If set, the chart will not create a Secret resource
   existingSecret: ""
 
-  # -- GitHub webhook secret for validating incoming webhook payloads
-  # OPTIONAL when webhookAutoRegister.enabled is true (will be auto-generated)
-  # REQUIRED when webhookAutoRegister.enabled is false
-  webhookSecret: ""
-
-  # -- GitHub token with permissions to create JIT runner configs
+  # -- GitHub token with permissions to create JIT runner configs (backwards compatible)
+  # Used as default token for all owners, or as fallback when githubTokens is set
   # Required scopes for fine-grained PAT:
   #   - Actions: Read and write
   #   - Administration: Read and write
   #   - (If webhookAutoRegister.enabled) Webhooks: Read and write
   githubToken: ""
+
+  # -- Multiple GitHub tokens for different owners/organizations
+  # Each entry maps an owner to a specific token
+  # Example:
+  #   githubTokens:
+  #     - owner: "themicknugget"
+  #       token: "ghp_xxx"
+  #     - owner: "my-org"
+  #       token: "ghp_yyy"
+  githubTokens: []
+
+  # -- GitHub webhook secret for validating incoming webhook payloads
+  # OPTIONAL when webhookAutoRegister.enabled is true (will be auto-generated)
+  # REQUIRED when webhookAutoRegister.enabled is false
+  webhookSecret: ""
 
 ### Resources
 resources:

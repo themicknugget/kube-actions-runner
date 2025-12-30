@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/kube-actions-runner/kube-actions-runner/internal/logger"
+	"github.com/kube-actions-runner/kube-actions-runner/internal/tokens"
 )
 
 func TestGenerateSecret(t *testing.T) {
@@ -40,6 +41,12 @@ func TestGenerateSecret(t *testing.T) {
 func TestNewManager(t *testing.T) {
 	log := logger.New()
 
+	// Create a token registry for testing
+	tokenRegistry, err := tokens.NewRegistry("", "test-token")
+	if err != nil {
+		t.Fatalf("failed to create token registry: %v", err)
+	}
+
 	tests := []struct {
 		name           string
 		config         Config
@@ -49,7 +56,7 @@ func TestNewManager(t *testing.T) {
 		{
 			name: "auto-generate secret when empty",
 			config: Config{
-				Token:         "test-token",
+				TokenRegistry: tokenRegistry,
 				WebhookURL:    "https://example.com/webhook",
 				WebhookSecret: "",
 				Logger:        log,
@@ -60,7 +67,7 @@ func TestNewManager(t *testing.T) {
 		{
 			name: "use provided secret",
 			config: Config{
-				Token:         "test-token",
+				TokenRegistry: tokenRegistry,
 				WebhookURL:    "https://example.com/webhook",
 				WebhookSecret: "my-custom-secret",
 				Logger:        log,

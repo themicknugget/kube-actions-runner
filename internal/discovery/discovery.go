@@ -9,12 +9,13 @@ import (
 
 	"github.com/google/go-github/v57/github"
 	"github.com/kube-actions-runner/kube-actions-runner/internal/logger"
+	"github.com/kube-actions-runner/kube-actions-runner/internal/tokens"
 )
 
 // Discoverer scans GitHub repositories for self-hosted runner workflows
 type Discoverer struct {
-	client *github.Client
-	logger *logger.Logger
+	registry *tokens.Registry
+	logger   *logger.Logger
 }
 
 // RepoInfo contains information about a repository with self-hosted workflows
@@ -24,13 +25,14 @@ type RepoInfo struct {
 	FullName  string
 	Labels    []string // Collected labels from runs-on declarations
 	Workflows []string // Workflow files containing self-hosted
+	Token     string   // Token to use for this repo (for webhook registration)
 }
 
 // NewDiscoverer creates a new Discoverer
-func NewDiscoverer(token string, log *logger.Logger) *Discoverer {
+func NewDiscoverer(registry *tokens.Registry, log *logger.Logger) *Discoverer {
 	return &Discoverer{
-		client: github.NewClient(nil).WithAuthToken(token),
-		logger: log,
+		registry: registry,
+		logger:   log,
 	}
 }
 
@@ -41,78 +43,117 @@ func NewDiscoverer(token string, log *logger.Logger) *Discoverer {
 var runsOnPattern = regexp.MustCompile(`runs-on:\s*(\[([^\]]+)\]|([^\n]+))`)
 
 // DiscoverRepos finds all repositories with self-hosted runner workflows
+// It discovers repos for each configured token and deduplicates results
 func (d *Discoverer) DiscoverRepos(ctx context.Context) ([]RepoInfo, error) {
 	d.logger.Info("starting repository discovery")
 
-	user, resp, err := d.client.Users.Get(ctx, "")
-	if err != nil {
-		if resp != nil && resp.StatusCode == 401 {
-			return nil, fmt.Errorf("GitHub token is invalid or expired: %w", err)
+	allTokens := d.registry.GetAllTokens()
+	if len(allTokens) == 0 {
+		return nil, fmt.Errorf("no tokens configured for discovery")
+	}
+
+	// Track discovered repos by full name to avoid duplicates
+	repoMap := make(map[string]RepoInfo)
+
+	for _, ownerToken := range allTokens {
+		client := github.NewClient(nil).WithAuthToken(ownerToken.Token)
+
+		if ownerToken.Owner != "" {
+			d.logger.Info("discovering repos for owner", "owner", ownerToken.Owner)
+		} else {
+			d.logger.Info("discovering repos with default token")
 		}
-		return nil, fmt.Errorf("failed to get authenticated user: %w", err)
-	}
-	d.logger.Info("authenticated as user", "login", user.GetLogin())
 
-	var allRepos []*github.Repository
-	opts := &github.RepositoryListByAuthenticatedUserOptions{
-		Affiliation: "owner,collaborator,organization_member",
-		ListOptions: github.ListOptions{PerPage: 100},
-	}
-
-	for {
-		repos, resp, err := d.client.Repositories.ListByAuthenticatedUser(ctx, opts)
+		user, resp, err := client.Users.Get(ctx, "")
 		if err != nil {
-			if resp != nil {
-				switch resp.StatusCode {
-				case 401:
-					return nil, fmt.Errorf("GitHub token is invalid or expired: %w", err)
-				case 403:
-					return nil, fmt.Errorf("GitHub token lacks permission to list repositories (needs 'repo' or 'read:org' scope): %w", err)
-				}
+			if resp != nil && resp.StatusCode == 401 {
+				d.logger.Error("GitHub token is invalid or expired", "owner", ownerToken.Owner, "error", err)
+				continue
 			}
-			return nil, fmt.Errorf("failed to list repositories: %w", err)
+			d.logger.Error("failed to get authenticated user", "owner", ownerToken.Owner, "error", err)
+			continue
 		}
-		allRepos = append(allRepos, repos...)
+		d.logger.Info("authenticated as user", "login", user.GetLogin(), "owner", ownerToken.Owner)
 
-		if resp.NextPage == 0 {
-			break
+		var allRepos []*github.Repository
+		opts := &github.RepositoryListByAuthenticatedUserOptions{
+			Affiliation: "owner,collaborator,organization_member",
+			ListOptions: github.ListOptions{PerPage: 100},
 		}
-		opts.Page = resp.NextPage
+
+		for {
+			repos, resp, err := client.Repositories.ListByAuthenticatedUser(ctx, opts)
+			if err != nil {
+				if resp != nil {
+					switch resp.StatusCode {
+					case 401:
+						d.logger.Error("GitHub token is invalid or expired", "owner", ownerToken.Owner, "error", err)
+					case 403:
+						d.logger.Error("GitHub token lacks permission to list repositories", "owner", ownerToken.Owner, "error", err)
+					default:
+						d.logger.Error("failed to list repositories", "owner", ownerToken.Owner, "error", err)
+					}
+				} else {
+					d.logger.Error("failed to list repositories", "owner", ownerToken.Owner, "error", err)
+				}
+				break
+			}
+			allRepos = append(allRepos, repos...)
+
+			if resp.NextPage == 0 {
+				break
+			}
+			opts.Page = resp.NextPage
+		}
+
+		d.logger.Info("found repositories", "count", len(allRepos), "owner", ownerToken.Owner)
+
+		for _, repo := range allRepos {
+			if repo.GetArchived() {
+				continue
+			}
+
+			fullName := repo.GetFullName()
+
+			// Skip if already discovered by a previous token
+			if _, exists := repoMap[fullName]; exists {
+				continue
+			}
+
+			info, err := d.checkRepoForSelfHostedWithClient(ctx, client, repo.GetOwner().GetLogin(), repo.GetName())
+			if err != nil {
+				d.logger.Warn("failed to check repository",
+					"repo", fullName,
+					"error", err)
+				continue
+			}
+
+			if info != nil {
+				info.Token = ownerToken.Token
+				repoMap[fullName] = *info
+				d.logger.Info("found self-hosted workflows",
+					"repo", info.FullName,
+					"workflows", info.Workflows,
+					"labels", info.Labels)
+			}
+		}
 	}
 
-	d.logger.Info("found repositories", "count", len(allRepos))
-
-	var results []RepoInfo
-	for _, repo := range allRepos {
-		if repo.GetArchived() {
-			continue
-		}
-
-		info, err := d.checkRepoForSelfHosted(ctx, repo.GetOwner().GetLogin(), repo.GetName())
-		if err != nil {
-			d.logger.Warn("failed to check repository",
-				"repo", repo.GetFullName(),
-				"error", err)
-			continue
-		}
-
-		if info != nil {
-			results = append(results, *info)
-			d.logger.Info("found self-hosted workflows",
-				"repo", info.FullName,
-				"workflows", info.Workflows,
-				"labels", info.Labels)
-		}
+	// Convert map to slice
+	results := make([]RepoInfo, 0, len(repoMap))
+	for _, info := range repoMap {
+		results = append(results, info)
 	}
 
 	d.logger.Info("discovery complete", "repos_with_self_hosted", len(results))
 	return results, nil
 }
 
-// checkRepoForSelfHosted checks if a repository has workflows using self-hosted runners
-func (d *Discoverer) checkRepoForSelfHosted(ctx context.Context, owner, repo string) (*RepoInfo, error) {
+// checkRepoForSelfHostedWithClient checks if a repository has workflows using self-hosted runners
+// using the provided GitHub client
+func (d *Discoverer) checkRepoForSelfHostedWithClient(ctx context.Context, client *github.Client, owner, repo string) (*RepoInfo, error) {
 	// Try to get the .github/workflows directory
-	_, dirContent, _, err := d.client.Repositories.GetContents(
+	_, dirContent, _, err := client.Repositories.GetContents(
 		ctx, owner, repo, ".github/workflows", nil)
 	if err != nil {
 		// No workflows directory - that's fine, just skip
@@ -139,7 +180,7 @@ func (d *Discoverer) checkRepoForSelfHosted(ctx context.Context, owner, repo str
 		}
 
 		// Get file content
-		fileContent, _, _, err := d.client.Repositories.GetContents(
+		fileContent, _, _, err := client.Repositories.GetContents(
 			ctx, owner, repo, file.GetPath(), nil)
 		if err != nil {
 			d.logger.Warn("failed to get workflow file",
