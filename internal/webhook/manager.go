@@ -72,8 +72,9 @@ type RegisterResult struct {
 	Error     error
 }
 
-// RegisterWebhooks registers webhooks for all discovered repositories
-func (m *Manager) RegisterWebhooks(ctx context.Context, repos []discovery.RepoInfo) []RegisterResult {
+// RegisterWebhooks registers webhooks for all discovered repositories.
+// If forceUpdate is true, webhooks are always updated regardless of current config.
+func (m *Manager) RegisterWebhooks(ctx context.Context, repos []discovery.RepoInfo, forceUpdate bool) []RegisterResult {
 	var results []RegisterResult
 
 	for _, repo := range repos {
@@ -92,7 +93,7 @@ func (m *Manager) RegisterWebhooks(ctx context.Context, repos []discovery.RepoIn
 			}
 		}
 
-		result := m.registerWebhookWithToken(ctx, repo.Owner, repo.Name, token)
+		result := m.registerWebhookWithToken(ctx, repo.Owner, repo.Name, token, forceUpdate)
 		results = append(results, result)
 
 		// Rate limit protection
@@ -102,8 +103,9 @@ func (m *Manager) RegisterWebhooks(ctx context.Context, repos []discovery.RepoIn
 	return results
 }
 
-// registerWebhookWithToken registers or updates a webhook for a single repository using the provided token
-func (m *Manager) registerWebhookWithToken(ctx context.Context, owner, repo, token string) RegisterResult {
+// registerWebhookWithToken registers or updates a webhook for a single repository using the provided token.
+// If forceUpdate is true, existing webhooks are always updated (used when secret changes).
+func (m *Manager) registerWebhookWithToken(ctx context.Context, owner, repo, token string, forceUpdate bool) RegisterResult {
 	fullName := fmt.Sprintf("%s/%s", owner, repo)
 	result := RegisterResult{Repo: fullName}
 
@@ -150,29 +152,31 @@ func (m *Manager) registerWebhookWithToken(ctx context.Context, owner, repo, tok
 	}
 
 	if existingHook != nil {
-		// Check if update is actually needed
-		needsUpdate := false
+		// Check if update is actually needed (unless forceUpdate is set)
+		needsUpdate := forceUpdate
 
-		// Check if active
-		if !existingHook.GetActive() {
-			needsUpdate = true
-		}
-
-		// Check events - should have workflow_job
-		hasWorkflowJob := false
-		for _, event := range existingHook.Events {
-			if event == "workflow_job" {
-				hasWorkflowJob = true
-				break
+		if !needsUpdate {
+			// Check if active
+			if !existingHook.GetActive() {
+				needsUpdate = true
 			}
-		}
-		if !hasWorkflowJob {
-			needsUpdate = true
-		}
 
-		// Check content_type
-		if ct, ok := existingHook.Config["content_type"].(string); !ok || ct != "json" {
-			needsUpdate = true
+			// Check events - should have workflow_job
+			hasWorkflowJob := false
+			for _, event := range existingHook.Events {
+				if event == "workflow_job" {
+					hasWorkflowJob = true
+					break
+				}
+			}
+			if !hasWorkflowJob {
+				needsUpdate = true
+			}
+
+			// Check content_type
+			if ct, ok := existingHook.Config["content_type"].(string); !ok || ct != "json" {
+				needsUpdate = true
+			}
 		}
 
 		if !needsUpdate {
@@ -247,8 +251,9 @@ func (m *Manager) registerWebhookWithToken(ctx context.Context, owner, repo, tok
 	return result
 }
 
-// SyncWebhooks discovers repos and registers webhooks in one operation
-func (m *Manager) SyncWebhooks(ctx context.Context, discoverer *discovery.Discoverer) ([]RegisterResult, error) {
+// SyncWebhooks discovers repos and registers webhooks in one operation.
+// If forceUpdate is true, all webhooks are updated regardless of current config (used when secret changes).
+func (m *Manager) SyncWebhooks(ctx context.Context, discoverer *discovery.Discoverer, forceUpdate bool) ([]RegisterResult, error) {
 	repos, err := discoverer.DiscoverRepos(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("discovery failed: %w", err)
@@ -259,5 +264,5 @@ func (m *Manager) SyncWebhooks(ctx context.Context, discoverer *discovery.Discov
 		return nil, nil
 	}
 
-	return m.RegisterWebhooks(ctx, repos), nil
+	return m.RegisterWebhooks(ctx, repos, forceUpdate), nil
 }

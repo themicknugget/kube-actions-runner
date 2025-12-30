@@ -543,3 +543,62 @@ func GetRequiredArchFromLabels(labels []string) string {
 	}
 	return ""
 }
+
+const (
+	// WebhookSecretName is the name of the K8s secret that stores the webhook secret
+	WebhookSecretName = "kube-actions-runner-webhook-secret"
+	// WebhookSecretKey is the key within the secret that holds the webhook secret value
+	WebhookSecretKey = "webhook-secret"
+)
+
+// GetWebhookSecret retrieves the persisted webhook secret from Kubernetes.
+// Returns empty string and nil error if the secret doesn't exist yet.
+func (c *Client) GetWebhookSecret(ctx context.Context) (string, error) {
+	secret, err := c.clientset.CoreV1().Secrets(c.namespace).Get(ctx, WebhookSecretName, metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("failed to get webhook secret: %w", err)
+	}
+
+	if data, ok := secret.Data[WebhookSecretKey]; ok {
+		return string(data), nil
+	}
+	return "", nil
+}
+
+// SaveWebhookSecret persists the webhook secret to Kubernetes.
+// Creates the secret if it doesn't exist, updates it if it does.
+func (c *Client) SaveWebhookSecret(ctx context.Context, webhookSecret string) error {
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      WebhookSecretName,
+			Namespace: c.namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":       "kube-actions-runner",
+				"app.kubernetes.io/component":  "webhook-secret",
+				"app.kubernetes.io/managed-by": "kube-actions-runner",
+			},
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			WebhookSecretKey: []byte(webhookSecret),
+		},
+	}
+
+	// Try to create first
+	_, err := c.clientset.CoreV1().Secrets(c.namespace).Create(ctx, secret, metav1.CreateOptions{})
+	if err != nil {
+		if errors.IsAlreadyExists(err) {
+			// Update existing secret
+			_, err = c.clientset.CoreV1().Secrets(c.namespace).Update(ctx, secret, metav1.UpdateOptions{})
+			if err != nil {
+				return fmt.Errorf("failed to update webhook secret: %w", err)
+			}
+			return nil
+		}
+		return fmt.Errorf("failed to create webhook secret: %w", err)
+	}
+	return nil
+}
