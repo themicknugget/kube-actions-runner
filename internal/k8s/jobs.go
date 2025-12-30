@@ -294,6 +294,8 @@ func (c *Client) buildStandardPodSpec(config RunnerJobConfig, secretName string)
 			{
 				Name:  "runner",
 				Image: image,
+				Command: []string{"/bin/sh", "-c"},
+				Args:    []string{"./run.sh --jitconfig \"$RUNNER_JITCONFIG\""},
 				Env: []corev1.EnvVar{
 					{
 						Name: "RUNNER_JITCONFIG",
@@ -342,6 +344,8 @@ func (c *Client) buildUserNSPodSpec(config RunnerJobConfig, secretName string) c
 			{
 				Name:  "runner",
 				Image: image,
+				Command: []string{"/bin/sh", "-c"},
+				Args:    []string{"./run.sh --jitconfig \"$RUNNER_JITCONFIG\""},
 				Env: []corev1.EnvVar{
 					{
 						Name: "RUNNER_JITCONFIG",
@@ -386,6 +390,8 @@ func (c *Client) buildDinDPodSpec(config RunnerJobConfig, secretName string) cor
 			{
 				Name:  "runner",
 				Image: image,
+				Command: []string{"/bin/sh", "-c"},
+				Args:    []string{"./run.sh --jitconfig \"$RUNNER_JITCONFIG\""},
 				Env: []corev1.EnvVar{
 					{
 						Name: "RUNNER_JITCONFIG",
@@ -437,6 +443,7 @@ func (c *Client) buildDinDPodSpec(config RunnerJobConfig, secretName string) cor
 }
 
 // DinD-Rootless mode: hostUsers=false + privileged confines privileges to user namespace (recommended)
+// Note: This mode uses the ARC dind-rootless image which DOES support RUNNER_JITCONFIG natively
 func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName string) corev1.PodSpec {
 	image := config.RunnerImage
 	if image == "" {
