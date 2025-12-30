@@ -3,6 +3,7 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -39,6 +40,21 @@ var defaultRunnerImages = map[RunnerMode]string{
 	RunnerModeUserNS:       DefaultRunnerImage,
 	RunnerModeDinD:         DefaultRunnerImage,
 	RunnerModeDinDRootless: DefaultDinDRootlessImage,
+}
+
+// archLabelMap maps workflow labels to kubernetes.io/arch values
+var archLabelMap = map[string]string{
+	"arm64":   "arm64",
+	"aarch64": "arm64",
+	"amd64":   "amd64",
+	"x64":     "amd64",
+	"x86_64":  "amd64",
+}
+
+// osLabelMap maps workflow labels to kubernetes.io/os values
+var osLabelMap = map[string]string{
+	"linux":   "linux",
+	"windows": "windows",
 }
 
 func ValidRunnerModes() []string {
@@ -147,6 +163,33 @@ func commonVolumeMounts() []corev1.VolumeMount {
 	}
 }
 
+// buildNodeSelector detects architecture and OS labels from workflow labels
+// and returns appropriate nodeSelector values for Kubernetes scheduling
+func buildNodeSelector(labels []string) map[string]string {
+	nodeSelector := make(map[string]string)
+
+	for _, label := range labels {
+		lowerLabel := strings.ToLower(label)
+
+		// Check for architecture labels
+		if arch, ok := archLabelMap[lowerLabel]; ok {
+			nodeSelector["kubernetes.io/arch"] = arch
+		}
+
+		// Check for OS labels
+		if os, ok := osLabelMap[lowerLabel]; ok {
+			nodeSelector["kubernetes.io/os"] = os
+		}
+	}
+
+	// Return nil if no selectors were found to avoid empty map in PodSpec
+	if len(nodeSelector) == 0 {
+		return nil
+	}
+
+	return nodeSelector
+}
+
 func (c *Client) CreateRunnerJob(ctx context.Context, config RunnerJobConfig) error {
 	secretName := fmt.Sprintf("runner-jit-%s", config.Name)
 
@@ -239,6 +282,7 @@ func (c *Client) buildStandardPodSpec(config RunnerJobConfig, secretName string)
 
 	return corev1.PodSpec{
 		RestartPolicy: corev1.RestartPolicyNever,
+		NodeSelector:  buildNodeSelector(config.Labels),
 		SecurityContext: &corev1.PodSecurityContext{
 			RunAsNonRoot: ptr(true),
 			RunAsUser:    ptr(int64(1000)),
@@ -286,6 +330,7 @@ func (c *Client) buildUserNSPodSpec(config RunnerJobConfig, secretName string) c
 
 	return corev1.PodSpec{
 		RestartPolicy: corev1.RestartPolicyNever,
+		NodeSelector:  buildNodeSelector(config.Labels),
 		HostUsers:     ptr(false),
 		SecurityContext: &corev1.PodSecurityContext{
 			RunAsUser: ptr(int64(0)),
@@ -331,6 +376,7 @@ func (c *Client) buildDinDPodSpec(config RunnerJobConfig, secretName string) cor
 
 	return corev1.PodSpec{
 		RestartPolicy: corev1.RestartPolicyNever,
+		NodeSelector:  buildNodeSelector(config.Labels),
 		SecurityContext: &corev1.PodSecurityContext{
 			SeccompProfile: &corev1.SeccompProfile{
 				Type: corev1.SeccompProfileTypeRuntimeDefault,
@@ -399,6 +445,7 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 
 	return corev1.PodSpec{
 		RestartPolicy: corev1.RestartPolicyNever,
+		NodeSelector:  buildNodeSelector(config.Labels),
 		HostUsers:     ptr(false),
 		SecurityContext: &corev1.PodSecurityContext{
 			SeccompProfile: &corev1.SeccompProfile{

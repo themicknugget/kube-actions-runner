@@ -630,3 +630,273 @@ func TestCreateRunnerJob_HandlesExistingSecret(t *testing.T) {
 		t.Errorf("expected job name 'runner-12345', got %q", job.Name)
 	}
 }
+
+func TestBuildNodeSelector(t *testing.T) {
+	tests := []struct {
+		name           string
+		labels         []string
+		expectedArch   string
+		expectedOS     string
+		expectNil      bool
+	}{
+		{
+			name:         "arm64 label",
+			labels:       []string{"arm64"},
+			expectedArch: "arm64",
+		},
+		{
+			name:         "aarch64 label maps to arm64",
+			labels:       []string{"aarch64"},
+			expectedArch: "arm64",
+		},
+		{
+			name:         "amd64 label",
+			labels:       []string{"amd64"},
+			expectedArch: "amd64",
+		},
+		{
+			name:         "x64 label maps to amd64",
+			labels:       []string{"x64"},
+			expectedArch: "amd64",
+		},
+		{
+			name:         "x86_64 label maps to amd64",
+			labels:       []string{"x86_64"},
+			expectedArch: "amd64",
+		},
+		{
+			name:       "linux label",
+			labels:     []string{"linux"},
+			expectedOS: "linux",
+		},
+		{
+			name:       "windows label",
+			labels:     []string{"windows"},
+			expectedOS: "windows",
+		},
+		{
+			name:         "combined labels with arch and os",
+			labels:       []string{"self-hosted", "linux", "arm64"},
+			expectedArch: "arm64",
+			expectedOS:   "linux",
+		},
+		{
+			name:         "case insensitivity - ARM64",
+			labels:       []string{"ARM64"},
+			expectedArch: "arm64",
+		},
+		{
+			name:       "case insensitivity - Linux",
+			labels:     []string{"Linux"},
+			expectedOS: "linux",
+		},
+		{
+			name:         "case insensitivity - mixed case",
+			labels:       []string{"LINUX", "AArch64"},
+			expectedArch: "arm64",
+			expectedOS:   "linux",
+		},
+		{
+			name:      "empty labels",
+			labels:    []string{},
+			expectNil: true,
+		},
+		{
+			name:      "nil labels",
+			labels:    nil,
+			expectNil: true,
+		},
+		{
+			name:      "labels without arch or os - just self-hosted",
+			labels:    []string{"self-hosted"},
+			expectNil: true,
+		},
+		{
+			name:      "unknown labels are ignored",
+			labels:    []string{"self-hosted", "custom-label", "my-runner"},
+			expectNil: true,
+		},
+		{
+			name:         "unknown labels mixed with valid labels",
+			labels:       []string{"self-hosted", "custom-label", "arm64", "linux"},
+			expectedArch: "arm64",
+			expectedOS:   "linux",
+		},
+		{
+			name:         "multiple arch labels - last one wins",
+			labels:       []string{"arm64", "amd64"},
+			expectedArch: "amd64",
+		},
+		{
+			name:       "multiple os labels - last one wins",
+			labels:     []string{"linux", "windows"},
+			expectedOS: "windows",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := buildNodeSelector(tt.labels)
+
+			if tt.expectNil {
+				if result != nil {
+					t.Errorf("expected nil, got %v", result)
+				}
+				return
+			}
+
+			if result == nil {
+				t.Fatal("expected non-nil result")
+			}
+
+			if tt.expectedArch != "" {
+				if arch, ok := result["kubernetes.io/arch"]; !ok {
+					t.Error("expected kubernetes.io/arch to be set")
+				} else if arch != tt.expectedArch {
+					t.Errorf("expected arch %q, got %q", tt.expectedArch, arch)
+				}
+			} else {
+				if _, ok := result["kubernetes.io/arch"]; ok {
+					t.Error("expected kubernetes.io/arch to not be set")
+				}
+			}
+
+			if tt.expectedOS != "" {
+				if os, ok := result["kubernetes.io/os"]; !ok {
+					t.Error("expected kubernetes.io/os to be set")
+				} else if os != tt.expectedOS {
+					t.Errorf("expected os %q, got %q", tt.expectedOS, os)
+				}
+			} else {
+				if _, ok := result["kubernetes.io/os"]; ok {
+					t.Error("expected kubernetes.io/os to not be set")
+				}
+			}
+		})
+	}
+}
+
+func TestCreateRunnerJobWithArchLabels(t *testing.T) {
+	tests := []struct {
+		name         string
+		labels       []string
+		expectedArch string
+		expectedOS   string
+		expectNil    bool
+	}{
+		{
+			name:         "arm64 linux labels",
+			labels:       []string{"self-hosted", "linux", "arm64"},
+			expectedArch: "arm64",
+			expectedOS:   "linux",
+		},
+		{
+			name:         "amd64 linux labels",
+			labels:       []string{"self-hosted", "linux", "amd64"},
+			expectedArch: "amd64",
+			expectedOS:   "linux",
+		},
+		{
+			name:         "x64 windows labels",
+			labels:       []string{"self-hosted", "windows", "x64"},
+			expectedArch: "amd64",
+			expectedOS:   "windows",
+		},
+		{
+			name:      "no arch or os labels",
+			labels:    []string{"self-hosted"},
+			expectNil: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeClientset := fake.NewSimpleClientset()
+			client := NewClientWithClientset(fakeClientset, "test-ns")
+
+			config := RunnerJobConfig{
+				Name:       "runner-12345",
+				JITConfig:  "encoded-jit-config",
+				Owner:      "test-owner",
+				Repo:       "test-repo",
+				WorkflowID: 12345,
+				Labels:     tt.labels,
+				RunnerMode: RunnerModeStandard,
+			}
+
+			err := client.CreateRunnerJob(context.Background(), config)
+			if err != nil {
+				t.Fatalf("CreateRunnerJob failed: %v", err)
+			}
+
+			job, err := fakeClientset.BatchV1().Jobs("test-ns").Get(context.Background(), "runner-12345", metav1.GetOptions{})
+			if err != nil {
+				t.Fatalf("failed to get job: %v", err)
+			}
+
+			nodeSelector := job.Spec.Template.Spec.NodeSelector
+
+			if tt.expectNil {
+				if nodeSelector != nil && len(nodeSelector) > 0 {
+					t.Errorf("expected nil or empty nodeSelector, got %v", nodeSelector)
+				}
+				return
+			}
+
+			if nodeSelector == nil {
+				t.Fatal("expected nodeSelector to be set")
+			}
+
+			if tt.expectedArch != "" {
+				if arch, ok := nodeSelector["kubernetes.io/arch"]; !ok {
+					t.Error("expected kubernetes.io/arch to be set in nodeSelector")
+				} else if arch != tt.expectedArch {
+					t.Errorf("expected arch %q, got %q", tt.expectedArch, arch)
+				}
+			}
+
+			if tt.expectedOS != "" {
+				if os, ok := nodeSelector["kubernetes.io/os"]; !ok {
+					t.Error("expected kubernetes.io/os to be set in nodeSelector")
+				} else if os != tt.expectedOS {
+					t.Errorf("expected os %q, got %q", tt.expectedOS, os)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildPodSpec_NodeSelectorAcrossModes(t *testing.T) {
+	client := &Client{namespace: "test-ns"}
+	labels := []string{"self-hosted", "linux", "arm64"}
+
+	modes := []RunnerMode{RunnerModeStandard, RunnerModeUserNS, RunnerModeDinD, RunnerModeDinDRootless}
+
+	for _, mode := range modes {
+		t.Run(string(mode), func(t *testing.T) {
+			config := RunnerJobConfig{
+				Name:       "runner-12345",
+				Labels:     labels,
+				RunnerMode: mode,
+			}
+
+			podSpec := client.buildPodSpec(config, "secret-name")
+
+			if podSpec.NodeSelector == nil {
+				t.Fatal("expected nodeSelector to be set")
+			}
+
+			if arch, ok := podSpec.NodeSelector["kubernetes.io/arch"]; !ok {
+				t.Error("expected kubernetes.io/arch to be set")
+			} else if arch != "arm64" {
+				t.Errorf("expected arch 'arm64', got %q", arch)
+			}
+
+			if os, ok := podSpec.NodeSelector["kubernetes.io/os"]; !ok {
+				t.Error("expected kubernetes.io/os to be set")
+			} else if os != "linux" {
+				t.Errorf("expected os 'linux', got %q", os)
+			}
+		})
+	}
+}
