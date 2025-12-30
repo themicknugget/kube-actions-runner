@@ -1,6 +1,6 @@
 module github.com/kube-actions-runner/kube-actions-runner
 
-go 1.23.4
+go 1.25.4
 
 require (
 	github.com/go-chi/chi/v5 v5.0.10

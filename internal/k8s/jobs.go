@@ -632,3 +632,14 @@ func (c *Client) SaveWebhookSecret(ctx context.Context, webhookSecret string) er
 	}
 	return nil
 }
+
+// ListRunnerPods lists all runner pods in the namespace
+func (c *Client) ListRunnerPods(ctx context.Context) ([]corev1.Pod, error) {
+	pods, err := c.clientset.CoreV1().Pods(c.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "app=github-runner",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list runner pods: %w", err)
+	}
+	return pods.Items, nil
+}

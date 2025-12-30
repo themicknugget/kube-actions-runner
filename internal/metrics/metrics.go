@@ -72,6 +72,32 @@ var (
 			Help:      "Remaining GitHub API rate limit",
 		},
 	)
+
+	ReconcilerJobsCreatedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "reconciler_jobs_created_total",
+			Help:      "Total number of runner jobs created by reconciler",
+		},
+		[]string{"owner", "repo"},
+	)
+
+	ReconcilerJobsFailedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "reconciler_jobs_failed_total",
+			Help:      "Total number of runner jobs that failed to be created by reconciler",
+		},
+		[]string{"owner", "repo"},
+	)
+
+	ReconcilerCyclesTotal = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "reconciler_cycles_total",
+			Help:      "Total number of reconciliation cycles",
+		},
+	)
 )
 
 func StatusCategory(code int) string {

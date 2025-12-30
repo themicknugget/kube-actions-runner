@@ -34,6 +34,10 @@ type Config struct {
 	// Node configuration
 	SkipNodeCheck bool
 
+	// Reconciler configuration
+	ReconcilerEnabled  bool
+	ReconcilerInterval time.Duration
+
 	// Server configuration
 	Port string
 }
@@ -138,6 +142,21 @@ func Load() (*Config, error) {
 
 	// Node availability check configuration
 	cfg.SkipNodeCheck = os.Getenv("SKIP_NODE_CHECK") == "true"
+
+	// Reconciler configuration - enabled by default
+	reconcilerEnabledStr := os.Getenv("RECONCILER_ENABLED")
+	cfg.ReconcilerEnabled = reconcilerEnabledStr != "false" // Default to true
+
+	reconcilerIntervalStr := os.Getenv("RECONCILER_INTERVAL")
+	if reconcilerIntervalStr != "" {
+		interval, err := time.ParseDuration(reconcilerIntervalStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid RECONCILER_INTERVAL: %s", reconcilerIntervalStr)
+		}
+		cfg.ReconcilerInterval = interval
+	} else {
+		cfg.ReconcilerInterval = 30 * time.Second
+	}
 
 	return cfg, nil
 }

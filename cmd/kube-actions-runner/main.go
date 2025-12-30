@@ -170,6 +170,8 @@ func main() {
 		"runner_group_id", cfg.RunnerGroupID,
 		"webhook_auto_register", cfg.WebhookAutoRegister,
 		"skip_node_check", cfg.SkipNodeCheck,
+		"reconciler_enabled", cfg.ReconcilerEnabled,
+		"reconciler_interval", cfg.ReconcilerInterval,
 	)
 
 	ghClientFactory := ghclient.NewClientFactory(tokenRegistry, cfg.RunnerGroupID)
@@ -186,6 +188,23 @@ func main() {
 		TTLSeconds:      cfg.TTLSeconds,
 		SkipNodeCheck:   cfg.SkipNodeCheck,
 	})
+
+	// Start reconciler to pick up orphaned queued jobs
+	var reconcilerCancel context.CancelFunc
+	if cfg.ReconcilerEnabled {
+		reconciler := scaler.NewReconciler(scaler.ReconcilerConfig{
+			GHClientFactory: ghClientFactory,
+			K8sClient:       k8sClient,
+			Scaler:          s,
+			Logger:          log,
+			Interval:        cfg.ReconcilerInterval,
+			LabelMatchers:   labelMatchers,
+		})
+
+		var reconcilerCtx context.Context
+		reconcilerCtx, reconcilerCancel = context.WithCancel(context.Background())
+		go reconciler.Start(reconcilerCtx)
+	}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -277,6 +296,11 @@ func main() {
 
 	// Stop the sync goroutine
 	close(stopSync)
+
+	// Stop the reconciler
+	if reconcilerCancel != nil {
+		reconcilerCancel()
+	}
 
 	log.Info("shutting down server")
 
