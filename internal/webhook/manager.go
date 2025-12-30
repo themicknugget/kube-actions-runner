@@ -150,8 +150,37 @@ func (m *Manager) registerWebhookWithToken(ctx context.Context, owner, repo, tok
 	}
 
 	if existingHook != nil {
-		// Check if update is needed (secret can't be compared, so we always update to ensure it's current)
-		// Only update if URL matches but we want to ensure secret is correct
+		// Check if update is actually needed
+		needsUpdate := false
+
+		// Check if active
+		if !existingHook.GetActive() {
+			needsUpdate = true
+		}
+
+		// Check events - should have workflow_job
+		hasWorkflowJob := false
+		for _, event := range existingHook.Events {
+			if event == "workflow_job" {
+				hasWorkflowJob = true
+				break
+			}
+		}
+		if !hasWorkflowJob {
+			needsUpdate = true
+		}
+
+		// Check content_type
+		if ct, ok := existingHook.Config["content_type"].(string); !ok || ct != "json" {
+			needsUpdate = true
+		}
+
+		if !needsUpdate {
+			result.Unchanged = true
+			return result
+		}
+
+		// Update webhook with correct config
 		_, _, err := client.Repositories.EditHook(ctx, owner, repo, existingHook.GetID(), &github.Hook{
 			Config: map[string]interface{}{
 				"content_type": "json",

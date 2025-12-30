@@ -92,13 +92,16 @@ func main() {
 				return
 			}
 
-			var created, updated, errors int
+			var created, updated, unchanged, errors int
 			for _, r := range results {
 				if r.Created {
 					created++
 				}
 				if r.Updated {
 					updated++
+				}
+				if r.Unchanged {
+					unchanged++
 				}
 				if r.Error != nil {
 					errors++
@@ -107,6 +110,7 @@ func main() {
 			log.Info("initial webhook sync complete",
 				"created", created,
 				"updated", updated,
+				"unchanged", unchanged,
 				"errors", errors,
 			)
 		}()
@@ -190,13 +194,16 @@ func main() {
 					if err != nil {
 						log.Error("periodic webhook sync failed", "error", err)
 					} else {
-						var created, updated, errors int
+						var created, updated, unchanged, errors int
 						for _, r := range results {
 							if r.Created {
 								created++
 							}
 							if r.Updated {
 								updated++
+							}
+							if r.Unchanged {
+								unchanged++
 							}
 							if r.Error != nil {
 								errors++
@@ -206,6 +213,7 @@ func main() {
 							log.Info("periodic webhook sync complete",
 								"created", created,
 								"updated", updated,
+								"unchanged", unchanged,
 								"errors", errors,
 							)
 						}
