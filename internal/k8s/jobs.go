@@ -24,7 +24,7 @@ const (
 
 const (
 	DefaultRunnerImage       = "ghcr.io/actions/actions-runner:2.321.0"
-	DefaultDinDRootlessImage = "ghcr.io/actions/actions-runner-dind-rootless:2.321.0"
+	DefaultDinDRootlessImage = "ghcr.io/actions-runner-controller/actions-runner-controller/actions-runner-dind-rootless:ubuntu-22.04"
 	DefaultDinDSidecarImage  = "docker:27.4.1-dind"
 )
 
