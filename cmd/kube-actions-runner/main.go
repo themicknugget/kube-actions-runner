@@ -79,15 +79,19 @@ func main() {
 		// Use the (possibly generated) secret
 		webhookSecret = webhookManager.GetWebhookSecret()
 
-		// Run initial discovery and registration
-		ctx := context.Background()
-		discoverer := discovery.NewDiscoverer(tokenRegistry, log)
+		// Run initial discovery and registration in background
+		go func() {
+			log.Info("starting initial webhook sync in background")
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
 
-		results, err := webhookManager.SyncWebhooks(ctx, discoverer)
-		if err != nil {
-			log.Error("initial webhook sync failed", "error", err)
-			// Continue anyway - webhooks might already exist
-		} else {
+			discoverer := discovery.NewDiscoverer(tokenRegistry, log)
+			results, err := webhookManager.SyncWebhooks(ctx, discoverer)
+			if err != nil {
+				log.Error("initial webhook sync failed", "error", err)
+				return
+			}
+
 			var created, updated, errors int
 			for _, r := range results {
 				if r.Created {
@@ -105,7 +109,7 @@ func main() {
 				"updated", updated,
 				"errors", errors,
 			)
-		}
+		}()
 	}
 
 	log.Info("starting kube-actions-runner",
