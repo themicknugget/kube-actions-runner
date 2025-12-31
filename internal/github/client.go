@@ -169,13 +169,16 @@ func (c *Client) listUserRepositories(ctx context.Context, owner string) ([]stri
 	const endpoint = "list_user_repos"
 	var repos []string
 
-	opts := &github.RepositoryListByUserOptions{
+	// Use ListByAuthenticatedUser to get all repos the user has access to
+	// including collaborator and organization member repos
+	opts := &github.RepositoryListByAuthenticatedUserOptions{
+		Affiliation: "owner,collaborator,organization_member",
 		ListOptions: github.ListOptions{PerPage: 100},
 	}
 
 	for {
 		startTime := time.Now()
-		repoList, resp, err := c.client.Repositories.ListByUser(ctx, owner, opts)
+		repoList, resp, err := c.client.Repositories.ListByAuthenticatedUser(ctx, opts)
 		c.recordAPIMetrics(endpoint, startTime, resp, err)
 
 		if err != nil {
