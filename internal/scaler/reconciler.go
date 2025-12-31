@@ -102,7 +102,12 @@ func (r *Reconciler) reconcileOwner(ctx context.Context, owner string) error {
 		return fmt.Errorf("failed to list repositories: %w", err)
 	}
 
-	log.Info("found repositories", "count", len(repos))
+	// Log first few repos for debugging
+	sampleRepos := repos
+	if len(sampleRepos) > 5 {
+		sampleRepos = repos[:5]
+	}
+	log.Info("found repositories", "count", len(repos), "sample", sampleRepos)
 
 	for _, repo := range repos {
 		if err := r.reconcileRepo(ctx, ghClient, owner, repo); err != nil {
@@ -116,6 +121,7 @@ func (r *Reconciler) reconcileOwner(ctx context.Context, owner string) error {
 
 func (r *Reconciler) reconcileRepo(ctx context.Context, ghClient *ghclient.Client, owner, repo string) error {
 	log := r.logger.With("component", "reconciler", "owner", owner, "repo", repo)
+	log.Debug("checking repo for queued jobs")
 
 	// List queued jobs for this repo
 	queuedJobs, err := ghClient.ListQueuedJobs(ctx, owner, repo)
@@ -124,6 +130,7 @@ func (r *Reconciler) reconcileRepo(ctx context.Context, ghClient *ghclient.Clien
 	}
 
 	if len(queuedJobs) == 0 {
+		log.Debug("no queued jobs found")
 		return nil
 	}
 
