@@ -289,9 +289,25 @@ func (c *Client) CreateRunnerJob(ctx context.Context, config RunnerJobConfig) er
 	return nil
 }
 
+// hasDockerLabel checks if the "docker" label is present in the workflow labels
+func hasDockerLabel(labels []string) bool {
+	for _, label := range labels {
+		if strings.ToLower(label) == "docker" {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Client) buildPodSpec(config RunnerJobConfig, secretName string) corev1.PodSpec {
 	mode := config.RunnerMode
 	if mode == "" {
+		mode = RunnerModeStandard
+	}
+
+	// Only use docker modes (dind/dind-rootless) if "docker" label is present
+	// This avoids running the privileged sidecar for jobs that don't need it
+	if (mode == RunnerModeDinD || mode == RunnerModeDinDRootless) && !hasDockerLabel(config.Labels) {
 		mode = RunnerModeStandard
 	}
 

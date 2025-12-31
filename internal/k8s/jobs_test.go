@@ -109,6 +109,7 @@ func TestBuildPodSpec_DinDMode(t *testing.T) {
 	config := RunnerJobConfig{
 		Name:       "runner-12345",
 		RunnerMode: RunnerModeDinD,
+		Labels:     []string{"self-hosted", "docker"},
 	}
 
 	podSpec := client.buildPodSpec(config, "secret-name")
@@ -166,6 +167,7 @@ func TestBuildPodSpec_DinDModeCustomImages(t *testing.T) {
 		RunnerMode:  RunnerModeDinD,
 		RunnerImage: customRunner,
 		DindImage:   customDind,
+		Labels:      []string{"self-hosted", "docker"},
 	}
 
 	podSpec := client.buildPodSpec(config, "secret-name")
@@ -189,6 +191,7 @@ func TestBuildPodSpec_DinDRootlessMode(t *testing.T) {
 	config := RunnerJobConfig{
 		Name:       "runner-12345",
 		RunnerMode: RunnerModeDinDRootless,
+		Labels:     []string{"self-hosted", "docker"},
 	}
 
 	podSpec := client.buildPodSpec(config, "secret-name")
@@ -246,18 +249,18 @@ func TestBuildPodSpec_DefaultsToStandard(t *testing.T) {
 	}
 }
 
-func TestBuildPodSpec_HostUsersSettings(t *testing.T) {
+func TestBuildPodSpec_DinDFallsBackWithoutDockerLabel(t *testing.T) {
 	client := &Client{namespace: "test-ns"}
 
+	// When dind mode is configured but no "docker" label, should fall back to standard
 	tests := []struct {
-		mode             RunnerMode
-		expectHostUsers  *bool // nil means not set, otherwise expected value
-		description      string
+		mode   RunnerMode
+		labels []string
 	}{
-		{RunnerModeStandard, nil, "standard mode should not set hostUsers"},
-		{RunnerModeUserNS, ptr(false), "userns mode should set hostUsers=false"},
-		{RunnerModeDinD, nil, "dind mode should not set hostUsers"},
-		{RunnerModeDinDRootless, ptr(false), "dind-rootless mode should set hostUsers=false"},
+		{RunnerModeDinD, []string{"self-hosted", "linux"}},
+		{RunnerModeDinD, nil},
+		{RunnerModeDinDRootless, []string{"self-hosted", "linux"}},
+		{RunnerModeDinDRootless, nil},
 	}
 
 	for _, tt := range tests {
@@ -265,6 +268,55 @@ func TestBuildPodSpec_HostUsersSettings(t *testing.T) {
 			config := RunnerJobConfig{
 				Name:       "runner-12345",
 				RunnerMode: tt.mode,
+				Labels:     tt.labels,
+			}
+
+			podSpec := client.buildPodSpec(config, "secret-name")
+
+			// Should fall back to standard mode (single non-privileged container)
+			if len(podSpec.Containers) != 1 {
+				t.Errorf("expected 1 container (standard fallback), got %d", len(podSpec.Containers))
+			}
+
+			container := podSpec.Containers[0]
+			if container.Name != "runner" {
+				t.Errorf("expected container name 'runner', got %q", container.Name)
+			}
+
+			// Standard mode should have non-root user
+			if podSpec.SecurityContext == nil || podSpec.SecurityContext.RunAsUser == nil || *podSpec.SecurityContext.RunAsUser != 1000 {
+				t.Error("expected RunAsUser to be 1000 (standard mode)")
+			}
+
+			// Standard mode should not be privileged
+			if container.SecurityContext != nil && container.SecurityContext.Privileged != nil && *container.SecurityContext.Privileged {
+				t.Error("standard fallback should not be privileged")
+			}
+		})
+	}
+}
+
+func TestBuildPodSpec_HostUsersSettings(t *testing.T) {
+	client := &Client{namespace: "test-ns"}
+
+	tests := []struct {
+		mode             RunnerMode
+		labels           []string
+		expectHostUsers  *bool // nil means not set, otherwise expected value
+		description      string
+	}{
+		{RunnerModeStandard, nil, nil, "standard mode should not set hostUsers"},
+		{RunnerModeUserNS, nil, ptr(false), "userns mode should set hostUsers=false"},
+		{RunnerModeDinD, []string{"docker"}, nil, "dind mode should not set hostUsers"},
+		{RunnerModeDinDRootless, []string{"docker"}, ptr(false), "dind-rootless mode should set hostUsers=false"},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.mode), func(t *testing.T) {
+			config := RunnerJobConfig{
+				Name:       "runner-12345",
+				RunnerMode: tt.mode,
+				Labels:     tt.labels,
 			}
 
 			podSpec := client.buildPodSpec(config, "secret-name")
@@ -289,14 +341,15 @@ func TestBuildPodSpec_PrivilegedSettings(t *testing.T) {
 
 	tests := []struct {
 		mode             RunnerMode
+		labels           []string
 		expectPrivileged bool
 		containerName    string
 		description      string
 	}{
-		{RunnerModeStandard, false, "runner", "standard runner should not be privileged"},
-		{RunnerModeUserNS, false, "runner", "userns runner should not be privileged"},
-		{RunnerModeDinD, true, "dind", "dind sidecar should be privileged"},
-		{RunnerModeDinDRootless, true, "runner", "dind-rootless runner should be privileged"},
+		{RunnerModeStandard, nil, false, "runner", "standard runner should not be privileged"},
+		{RunnerModeUserNS, nil, false, "runner", "userns runner should not be privileged"},
+		{RunnerModeDinD, []string{"docker"}, true, "dind", "dind sidecar should be privileged"},
+		{RunnerModeDinDRootless, []string{"docker"}, true, "runner", "dind-rootless runner should be privileged"},
 	}
 
 	for _, tt := range tests {
@@ -304,6 +357,7 @@ func TestBuildPodSpec_PrivilegedSettings(t *testing.T) {
 			config := RunnerJobConfig{
 				Name:       "runner-12345",
 				RunnerMode: tt.mode,
+				Labels:     tt.labels,
 			}
 
 			podSpec := client.buildPodSpec(config, "secret-name")
@@ -335,13 +389,22 @@ func TestBuildPodSpec_JITConfigEnvVar(t *testing.T) {
 	client := &Client{namespace: "test-ns"}
 	secretName := "runner-jit-runner-12345"
 
-	modes := []RunnerMode{RunnerModeStandard, RunnerModeUserNS, RunnerModeDinD, RunnerModeDinDRootless}
+	tests := []struct {
+		mode   RunnerMode
+		labels []string
+	}{
+		{RunnerModeStandard, nil},
+		{RunnerModeUserNS, nil},
+		{RunnerModeDinD, []string{"docker"}},
+		{RunnerModeDinDRootless, []string{"docker"}},
+	}
 
-	for _, mode := range modes {
-		t.Run(string(mode), func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(string(tt.mode), func(t *testing.T) {
 			config := RunnerJobConfig{
 				Name:       "runner-12345",
-				RunnerMode: mode,
+				RunnerMode: tt.mode,
+				Labels:     tt.labels,
 			}
 
 			podSpec := client.buildPodSpec(config, secretName)
@@ -382,13 +445,22 @@ func TestBuildPodSpec_JITConfigEnvVar(t *testing.T) {
 
 func TestBuildPodSpec_RestartPolicyNever(t *testing.T) {
 	client := &Client{namespace: "test-ns"}
-	modes := []RunnerMode{RunnerModeStandard, RunnerModeUserNS, RunnerModeDinD, RunnerModeDinDRootless}
+	tests := []struct {
+		mode   RunnerMode
+		labels []string
+	}{
+		{RunnerModeStandard, nil},
+		{RunnerModeUserNS, nil},
+		{RunnerModeDinD, []string{"docker"}},
+		{RunnerModeDinDRootless, []string{"docker"}},
+	}
 
-	for _, mode := range modes {
-		t.Run(string(mode), func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(string(tt.mode), func(t *testing.T) {
 			config := RunnerJobConfig{
 				Name:       "runner-12345",
-				RunnerMode: mode,
+				RunnerMode: tt.mode,
+				Labels:     tt.labels,
 			}
 
 			podSpec := client.buildPodSpec(config, "secret-name")
@@ -868,16 +940,23 @@ func TestCreateRunnerJobWithArchLabels(t *testing.T) {
 
 func TestBuildPodSpec_NodeSelectorAcrossModes(t *testing.T) {
 	client := &Client{namespace: "test-ns"}
-	labels := []string{"self-hosted", "linux", "arm64"}
 
-	modes := []RunnerMode{RunnerModeStandard, RunnerModeUserNS, RunnerModeDinD, RunnerModeDinDRootless}
+	tests := []struct {
+		mode   RunnerMode
+		labels []string
+	}{
+		{RunnerModeStandard, []string{"self-hosted", "linux", "arm64"}},
+		{RunnerModeUserNS, []string{"self-hosted", "linux", "arm64"}},
+		{RunnerModeDinD, []string{"self-hosted", "linux", "arm64", "docker"}},
+		{RunnerModeDinDRootless, []string{"self-hosted", "linux", "arm64", "docker"}},
+	}
 
-	for _, mode := range modes {
-		t.Run(string(mode), func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(string(tt.mode), func(t *testing.T) {
 			config := RunnerJobConfig{
 				Name:       "runner-12345",
-				Labels:     labels,
-				RunnerMode: mode,
+				Labels:     tt.labels,
+				RunnerMode: tt.mode,
 			}
 
 			podSpec := client.buildPodSpec(config, "secret-name")
