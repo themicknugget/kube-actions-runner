@@ -362,7 +362,6 @@ func (c *Client) buildStandardPodSpec(config RunnerJobConfig, secretName string)
 				},
 				SecurityContext: &corev1.SecurityContext{
 					AllowPrivilegeEscalation: ptr(false),
-					ReadOnlyRootFilesystem:   ptr(true),
 					Capabilities: &corev1.Capabilities{
 						Drop: []corev1.Capability{"ALL"},
 					},
