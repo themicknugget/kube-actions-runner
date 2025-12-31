@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	ghclient "github.com/kube-actions-runner/kube-actions-runner/internal/github"
@@ -19,21 +20,30 @@ type Reconciler struct {
 	k8sClient       *k8s.Client
 	scaler          *Scaler
 	logger          *logger.Logger
-	interval        time.Duration
+	interval        time.Duration // Normal interval (default 5 minutes)
+	activeInterval  time.Duration // Active interval when jobs are queued (default 30 seconds)
+	inactivityWindow time.Duration // Time before returning to normal interval (default 10 minutes)
 	labelMatchers   []LabelMatcher
 	// reposToCheck is a list of owner/repo pairs to check for queued jobs
 	// If empty, all repos will be checked (expensive)
 	reposToCheck []string
+
+	// Activity tracking for adaptive intervals
+	mu               sync.Mutex
+	lastActivityTime time.Time
+	isActiveMode     bool
 }
 
 // ReconcilerConfig holds configuration for the Reconciler
 type ReconcilerConfig struct {
-	GHClientFactory *ghclient.ClientFactory
-	K8sClient       *k8s.Client
-	Scaler          *Scaler
-	Logger          *logger.Logger
-	Interval        time.Duration
-	LabelMatchers   []LabelMatcher
+	GHClientFactory  *ghclient.ClientFactory
+	K8sClient        *k8s.Client
+	Scaler           *Scaler
+	Logger           *logger.Logger
+	Interval         time.Duration // Normal interval (default 5 minutes)
+	ActiveInterval   time.Duration // Active interval when jobs are queued (default 30 seconds)
+	InactivityWindow time.Duration // Time before returning to normal interval (default 10 minutes)
+	LabelMatchers    []LabelMatcher
 	// ReposToCheck is a list of owner/repo pairs to check (from discovery)
 	ReposToCheck []string
 }
@@ -45,14 +55,27 @@ func NewReconciler(cfg ReconcilerConfig) *Reconciler {
 		// Default to 5 minutes to avoid rate limiting
 		interval = 5 * time.Minute
 	}
+
+	activeInterval := cfg.ActiveInterval
+	if activeInterval == 0 {
+		activeInterval = 30 * time.Second
+	}
+
+	inactivityWindow := cfg.InactivityWindow
+	if inactivityWindow == 0 {
+		inactivityWindow = 10 * time.Minute
+	}
+
 	return &Reconciler{
-		ghClientFactory: cfg.GHClientFactory,
-		k8sClient:       cfg.K8sClient,
-		scaler:          cfg.Scaler,
-		logger:          cfg.Logger,
-		interval:        interval,
-		labelMatchers:   cfg.LabelMatchers,
-		reposToCheck:    cfg.ReposToCheck,
+		ghClientFactory:  cfg.GHClientFactory,
+		k8sClient:        cfg.K8sClient,
+		scaler:           cfg.Scaler,
+		logger:           cfg.Logger,
+		interval:         interval,
+		activeInterval:   activeInterval,
+		inactivityWindow: inactivityWindow,
+		labelMatchers:    cfg.LabelMatchers,
+		reposToCheck:     cfg.ReposToCheck,
 	}
 }
 
@@ -62,15 +85,21 @@ func (r *Reconciler) SetReposToCheck(repos []string) {
 	r.logger.Info("reconciler repos updated", "count", len(repos))
 }
 
-// Start begins the reconciliation loop
+// Start begins the reconciliation loop with adaptive intervals
 func (r *Reconciler) Start(ctx context.Context) {
 	log := r.logger.With("component", "reconciler")
-	log.Info("starting reconciler", "interval", r.interval)
+	log.Info("starting reconciler",
+		"interval", r.interval,
+		"active_interval", r.activeInterval,
+		"inactivity_window", r.inactivityWindow,
+	)
 
 	// Run immediately on start
 	r.reconcile(ctx)
 
-	ticker := time.NewTicker(r.interval)
+	// Start with normal interval
+	currentInterval := r.interval
+	ticker := time.NewTicker(currentInterval)
 	defer ticker.Stop()
 
 	for {
@@ -80,8 +109,63 @@ func (r *Reconciler) Start(ctx context.Context) {
 			return
 		case <-ticker.C:
 			r.reconcile(ctx)
+
+			// Check if we need to adjust the interval
+			newInterval := r.calculateInterval()
+			if newInterval != currentInterval {
+				currentInterval = newInterval
+				ticker.Reset(currentInterval)
+			}
 		}
 	}
+}
+
+// recordActivity marks that workflow activity was detected
+func (r *Reconciler) recordActivity() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lastActivityTime = time.Now()
+}
+
+// calculateInterval determines the appropriate interval based on recent activity
+func (r *Reconciler) calculateInterval() time.Duration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// If we've never seen activity, use normal interval
+	if r.lastActivityTime.IsZero() {
+		if r.isActiveMode {
+			r.isActiveMode = false
+			r.logger.Info("reconciler returning to normal interval (no activity recorded)",
+				"interval", r.interval,
+			)
+		}
+		return r.interval
+	}
+
+	// Check if we're within the inactivity window
+	timeSinceActivity := time.Since(r.lastActivityTime)
+	if timeSinceActivity < r.inactivityWindow {
+		// Still within active window - use fast interval
+		if !r.isActiveMode {
+			r.isActiveMode = true
+			r.logger.Info("reconciler entering active mode",
+				"time_since_activity", timeSinceActivity.Round(time.Second),
+				"interval", r.activeInterval,
+			)
+		}
+		return r.activeInterval
+	}
+
+	// Past inactivity window - return to normal interval
+	if r.isActiveMode {
+		r.isActiveMode = false
+		r.logger.Info("reconciler returning to normal interval",
+			"time_since_activity", timeSinceActivity.Round(time.Second),
+			"interval", r.interval,
+		)
+	}
+	return r.interval
 }
 
 func (r *Reconciler) reconcile(ctx context.Context) {
@@ -157,6 +241,9 @@ func (r *Reconciler) reconcileRepo(ctx context.Context, ghClient *ghclient.Clien
 	if len(queuedJobs) == 0 {
 		return nil
 	}
+
+	// Record activity - queued jobs found means we should poll more frequently
+	r.recordActivity()
 
 	// Get existing runner pods
 	existingPods, err := r.k8sClient.ListRunnerPods(ctx)

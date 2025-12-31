@@ -35,8 +35,10 @@ type Config struct {
 	SkipNodeCheck bool
 
 	// Reconciler configuration
-	ReconcilerEnabled  bool
-	ReconcilerInterval time.Duration
+	ReconcilerEnabled          bool
+	ReconcilerInterval         time.Duration
+	ReconcilerActiveInterval   time.Duration
+	ReconcilerInactivityWindow time.Duration
 
 	// Server configuration
 	Port string
@@ -157,6 +159,30 @@ func Load() (*Config, error) {
 	} else {
 		// Default to 5 minutes to avoid rate limiting
 		cfg.ReconcilerInterval = 5 * time.Minute
+	}
+
+	// Active interval when workflows are queued (faster polling)
+	reconcilerActiveIntervalStr := os.Getenv("RECONCILER_ACTIVE_INTERVAL")
+	if reconcilerActiveIntervalStr != "" {
+		interval, err := time.ParseDuration(reconcilerActiveIntervalStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid RECONCILER_ACTIVE_INTERVAL: %s", reconcilerActiveIntervalStr)
+		}
+		cfg.ReconcilerActiveInterval = interval
+	} else {
+		cfg.ReconcilerActiveInterval = 30 * time.Second
+	}
+
+	// Inactivity window before returning to normal interval
+	reconcilerInactivityWindowStr := os.Getenv("RECONCILER_INACTIVITY_WINDOW")
+	if reconcilerInactivityWindowStr != "" {
+		interval, err := time.ParseDuration(reconcilerInactivityWindowStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid RECONCILER_INACTIVITY_WINDOW: %s", reconcilerInactivityWindowStr)
+		}
+		cfg.ReconcilerInactivityWindow = interval
+	} else {
+		cfg.ReconcilerInactivityWindow = 10 * time.Minute
 	}
 
 	return cfg, nil

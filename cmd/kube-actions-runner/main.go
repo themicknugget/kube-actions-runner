@@ -181,6 +181,8 @@ func main() {
 		"skip_node_check", cfg.SkipNodeCheck,
 		"reconciler_enabled", cfg.ReconcilerEnabled,
 		"reconciler_interval", cfg.ReconcilerInterval,
+		"reconciler_active_interval", cfg.ReconcilerActiveInterval,
+		"reconciler_inactivity_window", cfg.ReconcilerInactivityWindow,
 	)
 
 	ghClientFactory := ghclient.NewClientFactory(tokenRegistry, cfg.RunnerGroupID)
@@ -202,12 +204,14 @@ func main() {
 	var reconcilerCancel context.CancelFunc
 	if cfg.ReconcilerEnabled {
 		reconciler = scaler.NewReconciler(scaler.ReconcilerConfig{
-			GHClientFactory: ghClientFactory,
-			K8sClient:       k8sClient,
-			Scaler:          s,
-			Logger:          log,
-			Interval:        cfg.ReconcilerInterval,
-			LabelMatchers:   labelMatchers,
+			GHClientFactory:  ghClientFactory,
+			K8sClient:        k8sClient,
+			Scaler:           s,
+			Logger:           log,
+			Interval:         cfg.ReconcilerInterval,
+			ActiveInterval:   cfg.ReconcilerActiveInterval,
+			InactivityWindow: cfg.ReconcilerInactivityWindow,
+			LabelMatchers:    labelMatchers,
 		})
 
 		var reconcilerCtx context.Context
