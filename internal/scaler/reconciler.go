@@ -72,7 +72,7 @@ func (r *Reconciler) Start(ctx context.Context) {
 
 func (r *Reconciler) reconcile(ctx context.Context) {
 	log := r.logger.With("component", "reconciler")
-	log.Debug("starting reconciliation cycle")
+	log.Info("starting reconciliation cycle")
 	metrics.ReconcilerCyclesTotal.Inc()
 
 	// Get all configured owners from the token registry
@@ -84,10 +84,12 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 			log.Error("failed to reconcile owner", "owner", owner, "error", err)
 		}
 	}
+	log.Info("reconciliation cycle complete", "owners_checked", len(owners))
 }
 
 func (r *Reconciler) reconcileOwner(ctx context.Context, owner string) error {
 	log := r.logger.With("component", "reconciler", "owner", owner)
+	log.Info("reconciling owner")
 
 	ghClient, err := r.ghClientFactory.GetClientForOwner(owner)
 	if err != nil {
@@ -100,7 +102,7 @@ func (r *Reconciler) reconcileOwner(ctx context.Context, owner string) error {
 		return fmt.Errorf("failed to list repositories: %w", err)
 	}
 
-	log.Debug("found repositories", "count", len(repos))
+	log.Info("found repositories", "count", len(repos))
 
 	for _, repo := range repos {
 		if err := r.reconcileRepo(ctx, ghClient, owner, repo); err != nil {
@@ -125,7 +127,7 @@ func (r *Reconciler) reconcileRepo(ctx context.Context, ghClient *ghclient.Clien
 		return nil
 	}
 
-	log.Debug("found queued jobs", "count", len(queuedJobs))
+	log.Info("found queued jobs", "count", len(queuedJobs))
 
 	// Get existing runner pods
 	existingPods, err := r.k8sClient.ListRunnerPods(ctx)
@@ -151,7 +153,7 @@ func (r *Reconciler) reconcileRepo(ctx context.Context, ghClient *ghclient.Clien
 
 		// Check if we already have a runner for this job
 		if existingJobIDs[job.ID] {
-			log.Debug("runner already exists for job", "job_id", job.ID)
+			log.Info("runner already exists for job", "job_id", job.ID)
 			continue
 		}
 
