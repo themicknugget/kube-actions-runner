@@ -86,12 +86,11 @@ func (r *Reconciler) Start(ctx context.Context) {
 
 func (r *Reconciler) reconcile(ctx context.Context) {
 	log := r.logger.With("component", "reconciler")
-	log.Info("starting reconciliation cycle")
+	log.Debug("starting reconciliation cycle")
 	metrics.ReconcilerCyclesTotal.Inc()
 
 	// If we have a specific list of repos to check, use that
 	if len(r.reposToCheck) > 0 {
-		log.Info("checking specific repos", "count", len(r.reposToCheck))
 		for _, fullRepo := range r.reposToCheck {
 			parts := strings.SplitN(fullRepo, "/", 2)
 			if len(parts) != 2 {
@@ -109,7 +108,6 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 				log.Error("failed to reconcile repo", "repo", fullRepo, "error", err.Error())
 			}
 		}
-		log.Info("reconciliation cycle complete", "repos_checked", len(r.reposToCheck))
 		return
 	}
 
@@ -122,12 +120,10 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 			log.Error("failed to reconcile owner", "owner", owner, "error", err.Error())
 		}
 	}
-	log.Info("reconciliation cycle complete", "owners_checked", len(owners))
 }
 
 func (r *Reconciler) reconcileOwner(ctx context.Context, owner string) error {
 	log := r.logger.With("component", "reconciler", "owner", owner)
-	log.Info("reconciling owner")
 
 	ghClient, err := r.ghClientFactory.GetClientForOwner(owner)
 	if err != nil {
@@ -140,17 +136,9 @@ func (r *Reconciler) reconcileOwner(ctx context.Context, owner string) error {
 		return fmt.Errorf("failed to list repositories: %w", err)
 	}
 
-	// Log first few repos for debugging
-	sampleRepos := repos
-	if len(sampleRepos) > 5 {
-		sampleRepos = repos[:5]
-	}
-	log.Info("found repositories", "count", len(repos), "sample", sampleRepos)
-
 	for _, repo := range repos {
 		if err := r.reconcileRepo(ctx, ghClient, owner, repo); err != nil {
 			log.Error("failed to reconcile repo", "repo", repo, "error", err.Error())
-			// Continue with other repos
 		}
 	}
 
@@ -159,7 +147,6 @@ func (r *Reconciler) reconcileOwner(ctx context.Context, owner string) error {
 
 func (r *Reconciler) reconcileRepo(ctx context.Context, ghClient *ghclient.Client, owner, repo string) error {
 	log := r.logger.With("component", "reconciler", "owner", owner, "repo", repo)
-	log.Debug("checking repo for queued jobs")
 
 	// List queued jobs for this repo
 	queuedJobs, err := ghClient.ListQueuedJobs(ctx, owner, repo)
@@ -168,11 +155,8 @@ func (r *Reconciler) reconcileRepo(ctx context.Context, ghClient *ghclient.Clien
 	}
 
 	if len(queuedJobs) == 0 {
-		log.Debug("no queued jobs found")
 		return nil
 	}
-
-	log.Info("found queued jobs", "count", len(queuedJobs))
 
 	// Get existing runner pods
 	existingPods, err := r.k8sClient.ListRunnerPods(ctx)
@@ -198,11 +182,10 @@ func (r *Reconciler) reconcileRepo(ctx context.Context, ghClient *ghclient.Clien
 
 		// Check if we already have a runner for this job
 		if existingJobIDs[job.ID] {
-			log.Info("runner already exists for job", "job_id", job.ID)
 			continue
 		}
 
-		log.Info("creating runner for orphaned queued job", "job_id", job.ID, "job_name", job.Name)
+		log.Info("creating runner for queued job", "job_id", job.ID, "job_name", job.Name)
 
 		// Create runner for this job
 		if err := r.createRunnerForJob(ctx, ghClient, job); err != nil {
@@ -222,14 +205,34 @@ func (r *Reconciler) matchesLabels(labels []string) bool {
 }
 
 func (r *Reconciler) createRunnerForJob(ctx context.Context, ghClient *ghclient.Client, job ghclient.QueuedJob) error {
-	jobName := fmt.Sprintf("runner-%d", job.ID)
+	log := r.logger.With("component", "reconciler", "owner", job.Owner, "repo", job.Repo, "job_id", job.ID)
+	runnerName := fmt.Sprintf("runner-%d", job.ID)
 
 	// Generate JIT config
-	jitConfig, err := ghClient.GenerateJITConfig(ctx, job.Owner, job.Repo, jobName, job.Labels)
+	jitConfig, err := ghClient.GenerateJITConfig(ctx, job.Owner, job.Repo, runnerName, job.Labels)
 	if err != nil {
-		return fmt.Errorf("failed to generate JIT config: %w", err)
+		// Check if it's a 409 conflict (stale runner exists)
+		if strings.Contains(err.Error(), "409") && strings.Contains(err.Error(), "Already exists") {
+			log.Info("stale runner found, deleting", "runner_name", runnerName)
+			deleted, delErr := ghClient.DeleteRunnerByName(ctx, job.Owner, job.Repo, runnerName)
+			if delErr != nil {
+				return fmt.Errorf("failed to delete stale runner: %w", delErr)
+			}
+			if deleted {
+				log.Info("deleted stale runner, retrying JIT config generation")
+				// Retry JIT config generation
+				jitConfig, err = ghClient.GenerateJITConfig(ctx, job.Owner, job.Repo, runnerName, job.Labels)
+				if err != nil {
+					return fmt.Errorf("failed to generate JIT config after cleanup: %w", err)
+				}
+			} else {
+				return fmt.Errorf("stale runner not found for deletion: %w", err)
+			}
+		} else {
+			return fmt.Errorf("failed to generate JIT config: %w", err)
+		}
 	}
 
 	// Use the scaler's createRunnerJob to maintain rate limiting
-	return r.scaler.createRunnerJob(ctx, jobName, jitConfig.EncodedJITConfig, job.Owner, job.Repo, job.ID, job.Labels)
+	return r.scaler.createRunnerJob(ctx, runnerName, jitConfig.EncodedJITConfig, job.Owner, job.Repo, job.ID, job.Labels)
 }

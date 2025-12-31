@@ -291,3 +291,49 @@ func (c *Client) listJobsForRun(ctx context.Context, owner, repo string, runID i
 
 	return queuedJobs, nil
 }
+
+// DeleteRunnerByName finds and deletes a runner by name
+// Returns true if a runner was deleted, false if not found
+func (c *Client) DeleteRunnerByName(ctx context.Context, owner, repo, runnerName string) (bool, error) {
+	const endpoint = "list_runners"
+
+	// List all runners for the repo
+	opts := &github.ListOptions{PerPage: 100}
+
+	for {
+		startTime := time.Now()
+		runners, resp, err := c.client.Actions.ListRunners(ctx, owner, repo, opts)
+		c.recordAPIMetrics(endpoint, startTime, resp, err)
+
+		if err != nil {
+			return false, fmt.Errorf("failed to list runners: %w", err)
+		}
+		if resp != nil && resp.Body != nil {
+			defer resp.Body.Close()
+		}
+
+		// Find and delete the runner with matching name
+		for _, runner := range runners.Runners {
+			if runner.GetName() == runnerName {
+				startTime = time.Now()
+				delResp, err := c.client.Actions.RemoveRunner(ctx, owner, repo, runner.GetID())
+				c.recordAPIMetrics("delete_runner", startTime, delResp, err)
+
+				if err != nil {
+					return false, fmt.Errorf("failed to delete runner %s: %w", runnerName, err)
+				}
+				if delResp != nil && delResp.Body != nil {
+					defer delResp.Body.Close()
+				}
+				return true, nil
+			}
+		}
+
+		if resp.NextPage == 0 {
+			break
+		}
+		opts.Page = resp.NextPage
+	}
+
+	return false, nil
+}
