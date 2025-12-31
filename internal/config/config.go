@@ -155,7 +155,8 @@ func Load() (*Config, error) {
 		}
 		cfg.ReconcilerInterval = interval
 	} else {
-		cfg.ReconcilerInterval = 30 * time.Second
+		// Default to 5 minutes to avoid rate limiting
+		cfg.ReconcilerInterval = 5 * time.Minute
 	}
 
 	return cfg, nil

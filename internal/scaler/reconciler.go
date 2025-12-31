@@ -3,6 +3,7 @@ package scaler
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	ghclient "github.com/kube-actions-runner/kube-actions-runner/internal/github"
@@ -20,6 +21,9 @@ type Reconciler struct {
 	logger          *logger.Logger
 	interval        time.Duration
 	labelMatchers   []LabelMatcher
+	// reposToCheck is a list of owner/repo pairs to check for queued jobs
+	// If empty, all repos will be checked (expensive)
+	reposToCheck []string
 }
 
 // ReconcilerConfig holds configuration for the Reconciler
@@ -30,13 +34,16 @@ type ReconcilerConfig struct {
 	Logger          *logger.Logger
 	Interval        time.Duration
 	LabelMatchers   []LabelMatcher
+	// ReposToCheck is a list of owner/repo pairs to check (from discovery)
+	ReposToCheck []string
 }
 
 // NewReconciler creates a new Reconciler
 func NewReconciler(cfg ReconcilerConfig) *Reconciler {
 	interval := cfg.Interval
 	if interval == 0 {
-		interval = 30 * time.Second
+		// Default to 5 minutes to avoid rate limiting
+		interval = 5 * time.Minute
 	}
 	return &Reconciler{
 		ghClientFactory: cfg.GHClientFactory,
@@ -45,7 +52,14 @@ func NewReconciler(cfg ReconcilerConfig) *Reconciler {
 		logger:          cfg.Logger,
 		interval:        interval,
 		labelMatchers:   cfg.LabelMatchers,
+		reposToCheck:    cfg.ReposToCheck,
 	}
+}
+
+// SetReposToCheck updates the list of repos to check (called after discovery)
+func (r *Reconciler) SetReposToCheck(repos []string) {
+	r.reposToCheck = repos
+	r.logger.Info("reconciler repos updated", "count", len(repos))
 }
 
 // Start begins the reconciliation loop
@@ -75,13 +89,37 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 	log.Info("starting reconciliation cycle")
 	metrics.ReconcilerCyclesTotal.Inc()
 
-	// Get all configured owners from the token registry
+	// If we have a specific list of repos to check, use that
+	if len(r.reposToCheck) > 0 {
+		log.Info("checking specific repos", "count", len(r.reposToCheck))
+		for _, fullRepo := range r.reposToCheck {
+			parts := strings.SplitN(fullRepo, "/", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			owner, repo := parts[0], parts[1]
+
+			ghClient, err := r.ghClientFactory.GetClientForOwner(owner)
+			if err != nil {
+				log.Error("failed to get GitHub client", "owner", owner, "error", err.Error())
+				continue
+			}
+
+			if err := r.reconcileRepo(ctx, ghClient, owner, repo); err != nil {
+				log.Error("failed to reconcile repo", "repo", fullRepo, "error", err.Error())
+			}
+		}
+		log.Info("reconciliation cycle complete", "repos_checked", len(r.reposToCheck))
+		return
+	}
+
+	// Fallback: Get all configured owners and check all repos (expensive)
 	registry := r.ghClientFactory.GetRegistry()
 	owners := registry.GetConfiguredOwners()
 
 	for _, owner := range owners {
 		if err := r.reconcileOwner(ctx, owner); err != nil {
-			log.Error("failed to reconcile owner", "owner", owner, "error", err)
+			log.Error("failed to reconcile owner", "owner", owner, "error", err.Error())
 		}
 	}
 	log.Info("reconciliation cycle complete", "owners_checked", len(owners))

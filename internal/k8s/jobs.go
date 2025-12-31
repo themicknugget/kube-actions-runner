@@ -210,6 +210,7 @@ func buildTopologySpreadConstraints() []corev1.TopologySpreadConstraint {
 func (c *Client) CreateRunnerJob(ctx context.Context, config RunnerJobConfig) error {
 	secretName := fmt.Sprintf("runner-jit-%s", config.Name)
 
+	jobIDStr := fmt.Sprintf("%d", config.WorkflowID)
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretName,
@@ -218,6 +219,7 @@ func (c *Client) CreateRunnerJob(ctx context.Context, config RunnerJobConfig) er
 				"app":        "github-runner",
 				"owner":      config.Owner,
 				"repo":       config.Repo,
+				"job-id":     jobIDStr,
 				"managed-by": "kube-actions-runner",
 			},
 		},
@@ -228,8 +230,19 @@ func (c *Client) CreateRunnerJob(ctx context.Context, config RunnerJobConfig) er
 	}
 
 	_, err := c.clientset.CoreV1().Secrets(c.namespace).Create(ctx, secret, metav1.CreateOptions{})
-	if err != nil && !errors.IsAlreadyExists(err) {
-		return fmt.Errorf("failed to create secret: %w", err)
+	if err != nil {
+		if errors.IsAlreadyExists(err) {
+			// Secret exists from a previous attempt - delete and recreate with new JIT config
+			// This is critical: old JIT configs have expired registrations
+			if err := c.clientset.CoreV1().Secrets(c.namespace).Delete(ctx, secretName, metav1.DeleteOptions{}); err != nil {
+				return fmt.Errorf("failed to delete old secret: %w", err)
+			}
+			if _, err := c.clientset.CoreV1().Secrets(c.namespace).Create(ctx, secret, metav1.CreateOptions{}); err != nil {
+				return fmt.Errorf("failed to recreate secret: %w", err)
+			}
+		} else {
+			return fmt.Errorf("failed to create secret: %w", err)
+		}
 	}
 
 	podSpec := c.buildPodSpec(config, secretName)
@@ -239,11 +252,13 @@ func (c *Client) CreateRunnerJob(ctx context.Context, config RunnerJobConfig) er
 			Name:      config.Name,
 			Namespace: c.namespace,
 			Labels: map[string]string{
-				"app":         "github-runner",
-				"owner":       config.Owner,
-				"repo":        config.Repo,
-				"runner-mode": string(config.RunnerMode),
-				"managed-by":  "kube-actions-runner",
+				"app":                          "github-runner",
+				"app.kubernetes.io/component": "runner",
+				"owner":                        config.Owner,
+				"repo":                         config.Repo,
+				"job-id":                       jobIDStr,
+				"runner-mode":                  string(config.RunnerMode),
+				"managed-by":                   "kube-actions-runner",
 			},
 		},
 		Spec: batchv1.JobSpec{
@@ -252,11 +267,13 @@ func (c *Client) CreateRunnerJob(ctx context.Context, config RunnerJobConfig) er
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
-						"app":         "github-runner",
-						"owner":       config.Owner,
-						"repo":        config.Repo,
-						"runner-mode": string(config.RunnerMode),
-						"managed-by":  "kube-actions-runner",
+						"app":                          "github-runner",
+						"app.kubernetes.io/component": "runner",
+						"owner":                        config.Owner,
+						"repo":                         config.Repo,
+						"job-id":                       jobIDStr,
+						"runner-mode":                  string(config.RunnerMode),
+						"managed-by":                   "kube-actions-runner",
 					},
 				},
 				Spec: podSpec,

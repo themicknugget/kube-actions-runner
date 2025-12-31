@@ -238,8 +238,8 @@ func TestReconciler_NewReconcilerDefaults(t *testing.T) {
 		Logger: log,
 	})
 
-	if r.interval != 30*time.Second {
-		t.Errorf("expected default interval 30s, got %v", r.interval)
+	if r.interval != 5*time.Minute {
+		t.Errorf("expected default interval 5m, got %v", r.interval)
 	}
 
 	// Test custom interval

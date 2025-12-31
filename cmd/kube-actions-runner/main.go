@@ -67,6 +67,7 @@ func main() {
 
 	// Handle webhook auto-registration
 	var webhookManager *webhook.Manager
+	var reconciler *scaler.Reconciler // Declared here for goroutine access, initialized later
 	if cfg.WebhookAutoRegister {
 		log.Info("webhook auto-registration enabled",
 			"webhook_url", cfg.WebhookURL,
@@ -120,7 +121,7 @@ func main() {
 
 		// Run initial discovery and registration in background
 		// Pass secretIsNew to force update all webhooks when secret was just generated
-		go func(forceUpdate bool) {
+		go func(forceUpdate bool, rec *scaler.Reconciler) {
 			if forceUpdate {
 				log.Info("starting initial webhook sync in background (forcing updates - new secret)")
 			} else {
@@ -137,6 +138,7 @@ func main() {
 			}
 
 			var created, updated, unchanged, errors int
+			var discoveredRepos []string
 			for _, r := range results {
 				if r.Created {
 					created++
@@ -150,6 +152,8 @@ func main() {
 				if r.Error != nil {
 					errors++
 				}
+				// Collect repos with self-hosted workflows for reconciler
+				discoveredRepos = append(discoveredRepos, r.Repo)
 			}
 			log.Info("initial webhook sync complete",
 				"created", created,
@@ -157,7 +161,12 @@ func main() {
 				"unchanged", unchanged,
 				"errors", errors,
 			)
-		}(secretIsNew)
+
+			// Update reconciler with discovered repos
+			if rec != nil && len(discoveredRepos) > 0 {
+				rec.SetReposToCheck(discoveredRepos)
+			}
+		}(secretIsNew, reconciler)
 	}
 
 	log.Info("starting kube-actions-runner",
@@ -192,7 +201,7 @@ func main() {
 	// Start reconciler to pick up orphaned queued jobs
 	var reconcilerCancel context.CancelFunc
 	if cfg.ReconcilerEnabled {
-		reconciler := scaler.NewReconciler(scaler.ReconcilerConfig{
+		reconciler = scaler.NewReconciler(scaler.ReconcilerConfig{
 			GHClientFactory: ghClientFactory,
 			K8sClient:       k8sClient,
 			Scaler:          s,
