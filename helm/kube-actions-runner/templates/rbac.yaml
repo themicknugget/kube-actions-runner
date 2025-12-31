@@ -25,6 +25,10 @@ rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["create", "get", "list", "delete"]
+  # List runner Pods for reconciler (to check for existing runners)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
   # Manage JIT config Secrets for runners and webhook secret persistence
   - apiGroups: [""]
     resources: ["secrets"]
