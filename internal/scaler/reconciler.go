@@ -111,7 +111,7 @@ func (r *Reconciler) reconcileOwner(ctx context.Context, owner string) error {
 
 	for _, repo := range repos {
 		if err := r.reconcileRepo(ctx, ghClient, owner, repo); err != nil {
-			log.Error("failed to reconcile repo", "repo", repo, "error", err)
+			log.Error("failed to reconcile repo", "repo", repo, "error", err.Error())
 			// Continue with other repos
 		}
 	}
@@ -168,7 +168,7 @@ func (r *Reconciler) reconcileRepo(ctx context.Context, ghClient *ghclient.Clien
 
 		// Create runner for this job
 		if err := r.createRunnerForJob(ctx, ghClient, job); err != nil {
-			log.Error("failed to create runner for job", "job_id", job.ID, "error", err)
+			log.Error("failed to create runner for job", "job_id", job.ID, "error", err.Error())
 			metrics.ReconcilerJobsFailedTotal.WithLabelValues(owner, repo).Inc()
 			continue
 		}
