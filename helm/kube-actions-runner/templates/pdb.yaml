@@ -37,3 +37,21 @@ spec:
       {{- include "kube-actions-runner.cloudflare.selectorLabels" . | nindent 6 }}
 {{- end }}
 {{- end }}
+---
+{{- if .Values.runnerPodDisruptionBudget.enabled }}
+# PDB for dynamically-created runner pods
+# Prevents workflow jobs from being cancelled during node drains
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "kube-actions-runner.fullname" . }}-runners
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kube-actions-runner.labels" . | nindent 4 }}
+    app.kubernetes.io/component: runner-pdb
+spec:
+  maxUnavailable: {{ .Values.runnerPodDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      app: github-runner
+{{- end }}

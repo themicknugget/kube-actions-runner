@@ -263,3 +263,14 @@ podDisruptionBudget:
 
   # -- Maximum unavailable pods (alternative to minAvailable)
   # maxUnavailable: 1
+
+### Runner Pod Disruption Budget (Optional)
+# Protects dynamically-created runner pods from eviction during node drains.
+# This prevents workflow jobs from being cancelled mid-execution.
+runnerPodDisruptionBudget:
+  # -- Enable PodDisruptionBudget for runner pods
+  enabled: true
+
+  # -- Maximum unavailable runner pods during voluntary disruptions
+  # Set to 0 to prevent any runner eviction (node drains will wait for runners to complete)
+  maxUnavailable: 0
