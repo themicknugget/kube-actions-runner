@@ -200,8 +200,8 @@ data:
           "targets": [
             {
               "datasource": { "type": "prometheus", "uid": "${datasource}" },
-              "expr": "min(webhook_scaler_github_api_rate_limit_remaining)",
-              "legendFormat": "Rate Limit",
+              "expr": "webhook_scaler_github_api_rate_limit_remaining",
+              "legendFormat": "{{`{{owner}}`}}",
               "refId": "A"
             }
           ],
@@ -642,8 +642,8 @@ data:
           "targets": [
             {
               "datasource": { "type": "prometheus", "uid": "${datasource}" },
-              "expr": "min(webhook_scaler_github_api_rate_limit_remaining)",
-              "legendFormat": "Rate Limit Remaining",
+              "expr": "webhook_scaler_github_api_rate_limit_remaining",
+              "legendFormat": "{{`{{owner}}`}}",
               "refId": "A"
             }
           ],
@@ -937,9 +937,9 @@ data:
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "fieldConfig": {
             "defaults": {
-              "color": { "mode": "palette-classic" },
+              "color": { "fixedColor": "#6e9fff", "mode": "fixed" },
               "mappings": [],
-              "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+              "thresholds": { "mode": "absolute", "steps": [{ "color": "#6e9fff", "value": null }] },
               "unit": "short"
             },
             "overrides": []
@@ -947,7 +947,7 @@ data:
           "gridPos": { "h": 8, "w": 12, "x": 0, "y": 59 },
           "id": 15,
           "options": {
-            "displayMode": "lcd",
+            "displayMode": "gradient",
             "maxVizHeight": 300,
             "minVizHeight": 16,
             "minVizWidth": 8,

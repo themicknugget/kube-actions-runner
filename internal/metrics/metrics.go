@@ -75,12 +75,13 @@ var (
 		[]string{"endpoint"},
 	)
 
-	GitHubAPIRateLimitRemaining = promauto.NewGauge(
+	GitHubAPIRateLimitRemaining = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace: namespace,
 			Name:      "github_api_rate_limit_remaining",
 			Help:      "Remaining GitHub API rate limit",
 		},
+		[]string{"owner"},
 	)
 
 	ReconcilerJobsCreatedTotal = promauto.NewCounterVec(

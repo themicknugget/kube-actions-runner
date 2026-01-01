@@ -14,6 +14,7 @@ type Client struct {
 	client        *github.Client
 	runnerGroupID int64
 	token         string
+	owner         string // Owner this client is configured for (for metrics)
 }
 
 // NewClient creates a new GitHub client with the given token and runner group ID
@@ -25,6 +26,20 @@ func NewClient(token string, runnerGroupID int64) *Client {
 		client:        github.NewClient(nil).WithAuthToken(token),
 		runnerGroupID: runnerGroupID,
 		token:         token,
+		owner:         "default",
+	}
+}
+
+// NewClientForOwner creates a new GitHub client for a specific owner
+func NewClientForOwner(token string, runnerGroupID int64, owner string) *Client {
+	if runnerGroupID == 0 {
+		runnerGroupID = 1
+	}
+	return &Client{
+		client:        github.NewClient(nil).WithAuthToken(token),
+		runnerGroupID: runnerGroupID,
+		token:         token,
+		owner:         owner,
 	}
 }
 
@@ -51,7 +66,7 @@ func (f *ClientFactory) GetClientForOwner(owner string) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get token for owner %s: %w", owner, err)
 	}
-	return NewClient(token, f.runnerGroupID), nil
+	return NewClientForOwner(token, f.runnerGroupID, owner), nil
 }
 
 // GetRegistry returns the underlying token registry
@@ -70,7 +85,7 @@ func (c *Client) recordAPIMetrics(endpoint string, startTime time.Time, resp *gi
 	metrics.GitHubAPIRequestsTotal.WithLabelValues(endpoint, metrics.StatusCategory(resp.StatusCode)).Inc()
 
 	if resp.Rate.Remaining >= 0 {
-		metrics.GitHubAPIRateLimitRemaining.Set(float64(resp.Rate.Remaining))
+		metrics.GitHubAPIRateLimitRemaining.WithLabelValues(c.owner).Set(float64(resp.Rate.Remaining))
 	}
 }
 

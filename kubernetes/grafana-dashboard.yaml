@@ -194,7 +194,7 @@ data:
             {
               "datasource": { "type": "prometheus", "uid": "${datasource}" },
               "expr": "webhook_scaler_github_api_rate_limit_remaining",
-              "legendFormat": "Rate Limit",
+              "legendFormat": "{{owner}}",
               "refId": "A"
             }
           ],
@@ -636,7 +636,7 @@ data:
             {
               "datasource": { "type": "prometheus", "uid": "${datasource}" },
               "expr": "webhook_scaler_github_api_rate_limit_remaining",
-              "legendFormat": "Rate Limit Remaining",
+              "legendFormat": "{{owner}}",
               "refId": "A"
             }
           ],
