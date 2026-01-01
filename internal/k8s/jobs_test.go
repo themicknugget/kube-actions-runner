@@ -114,25 +114,35 @@ func TestBuildPodSpec_DinDMode(t *testing.T) {
 
 	podSpec := client.buildPodSpec(config, "secret-name")
 
-	if len(podSpec.Containers) != 2 {
-		t.Fatalf("expected 2 containers, got %d", len(podSpec.Containers))
+	// Runner should be in Containers, dind should be in InitContainers (native sidecar)
+	if len(podSpec.Containers) != 1 {
+		t.Fatalf("expected 1 container (runner), got %d", len(podSpec.Containers))
+	}
+	if len(podSpec.InitContainers) != 1 {
+		t.Fatalf("expected 1 init container (dind sidecar), got %d", len(podSpec.InitContainers))
 	}
 
-	var runnerContainer, dindContainer *corev1.Container
-	for i := range podSpec.Containers {
-		switch podSpec.Containers[i].Name {
-		case "runner":
-			runnerContainer = &podSpec.Containers[i]
-		case "dind":
-			dindContainer = &podSpec.Containers[i]
-		}
+	runnerContainer := &podSpec.Containers[0]
+	dindContainer := &podSpec.InitContainers[0]
+
+	if runnerContainer.Name != "runner" {
+		t.Errorf("expected runner container name 'runner', got %q", runnerContainer.Name)
+	}
+	if dindContainer.Name != "dind" {
+		t.Errorf("expected dind container name 'dind', got %q", dindContainer.Name)
 	}
 
-	if runnerContainer == nil {
-		t.Fatal("runner container not found")
+	// Verify dind is a native sidecar (restartPolicy: Always)
+	if dindContainer.RestartPolicy == nil {
+		t.Fatal("expected dind container to have restartPolicy set")
 	}
-	if dindContainer == nil {
-		t.Fatal("dind container not found")
+	if *dindContainer.RestartPolicy != corev1.ContainerRestartPolicyAlways {
+		t.Errorf("expected dind restartPolicy=Always, got %v", *dindContainer.RestartPolicy)
+	}
+
+	// Verify dind has startup probe
+	if dindContainer.StartupProbe == nil {
+		t.Fatal("expected dind container to have startupProbe")
 	}
 
 	if dindContainer.SecurityContext == nil {
@@ -172,17 +182,20 @@ func TestBuildPodSpec_DinDModeCustomImages(t *testing.T) {
 
 	podSpec := client.buildPodSpec(config, "secret-name")
 
-	for _, c := range podSpec.Containers {
-		switch c.Name {
-		case "runner":
-			if c.Image != customRunner {
-				t.Errorf("expected runner image %q, got %q", customRunner, c.Image)
-			}
-		case "dind":
-			if c.Image != customDind {
-				t.Errorf("expected dind image %q, got %q", customDind, c.Image)
-			}
-		}
+	// Check runner container image
+	if len(podSpec.Containers) != 1 || podSpec.Containers[0].Name != "runner" {
+		t.Fatal("expected single runner container")
+	}
+	if podSpec.Containers[0].Image != customRunner {
+		t.Errorf("expected runner image %q, got %q", customRunner, podSpec.Containers[0].Image)
+	}
+
+	// Check dind init container (native sidecar) image
+	if len(podSpec.InitContainers) != 1 || podSpec.InitContainers[0].Name != "dind" {
+		t.Fatal("expected single dind init container")
+	}
+	if podSpec.InitContainers[0].Image != customDind {
+		t.Errorf("expected dind image %q, got %q", customDind, podSpec.InitContainers[0].Image)
 	}
 }
 
@@ -249,9 +262,7 @@ func TestBuildPodSpec_DefaultsToStandard(t *testing.T) {
 	}
 }
 
-func TestBuildPodSpec_DinDFallsBackWithoutDockerLabel(t *testing.T) {
-	client := &Client{namespace: "test-ns"}
-
+func TestDetermineActualMode_DinDFallsBackWithoutDockerLabel(t *testing.T) {
 	// When dind mode is configured but no "docker" label, should fall back to standard
 	tests := []struct {
 		mode   RunnerMode
@@ -265,34 +276,69 @@ func TestBuildPodSpec_DinDFallsBackWithoutDockerLabel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(string(tt.mode), func(t *testing.T) {
-			config := RunnerJobConfig{
-				Name:       "runner-12345",
-				RunnerMode: tt.mode,
-				Labels:     tt.labels,
-			}
+			actualMode := DetermineActualMode(tt.mode, tt.labels)
 
-			podSpec := client.buildPodSpec(config, "secret-name")
-
-			// Should fall back to standard mode (single non-privileged container)
-			if len(podSpec.Containers) != 1 {
-				t.Errorf("expected 1 container (standard fallback), got %d", len(podSpec.Containers))
-			}
-
-			container := podSpec.Containers[0]
-			if container.Name != "runner" {
-				t.Errorf("expected container name 'runner', got %q", container.Name)
-			}
-
-			// Standard mode should have non-root user
-			if podSpec.SecurityContext == nil || podSpec.SecurityContext.RunAsUser == nil || *podSpec.SecurityContext.RunAsUser != 1000 {
-				t.Error("expected RunAsUser to be 1000 (standard mode)")
-			}
-
-			// Standard mode should not be privileged
-			if container.SecurityContext != nil && container.SecurityContext.Privileged != nil && *container.SecurityContext.Privileged {
-				t.Error("standard fallback should not be privileged")
+			// Should fall back to standard mode
+			if actualMode != RunnerModeStandard {
+				t.Errorf("expected mode to fall back to standard, got %s", actualMode)
 			}
 		})
+	}
+}
+
+func TestDetermineActualMode_DinDUsedWithDockerLabel(t *testing.T) {
+	// When dind mode is configured with "docker" label, should use dind
+	tests := []struct {
+		mode   RunnerMode
+		labels []string
+	}{
+		{RunnerModeDinD, []string{"self-hosted", "linux", "docker"}},
+		{RunnerModeDinD, []string{"docker"}},
+		{RunnerModeDinDRootless, []string{"self-hosted", "Docker"}}, // case insensitive
+		{RunnerModeDinDRootless, []string{"DOCKER"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.mode), func(t *testing.T) {
+			actualMode := DetermineActualMode(tt.mode, tt.labels)
+
+			// Should keep the configured mode
+			if actualMode != tt.mode {
+				t.Errorf("expected mode to stay as %s, got %s", tt.mode, actualMode)
+			}
+		})
+	}
+}
+
+func TestBuildPodSpec_StandardModeHasCorrectConfig(t *testing.T) {
+	client := &Client{namespace: "test-ns"}
+
+	config := RunnerJobConfig{
+		Name:       "runner-12345",
+		RunnerMode: RunnerModeStandard,
+		Labels:     []string{"self-hosted", "linux"},
+	}
+
+	podSpec := client.buildPodSpec(config, "secret-name")
+
+	// Should have single container
+	if len(podSpec.Containers) != 1 {
+		t.Errorf("expected 1 container, got %d", len(podSpec.Containers))
+	}
+
+	container := podSpec.Containers[0]
+	if container.Name != "runner" {
+		t.Errorf("expected container name 'runner', got %q", container.Name)
+	}
+
+	// Standard mode should have non-root user
+	if podSpec.SecurityContext == nil || podSpec.SecurityContext.RunAsUser == nil || *podSpec.SecurityContext.RunAsUser != 1000 {
+		t.Error("expected RunAsUser to be 1000 (standard mode)")
+	}
+
+	// Standard mode should not be privileged
+	if container.SecurityContext != nil && container.SecurityContext.Privileged != nil && *container.SecurityContext.Privileged {
+		t.Error("standard mode should not be privileged")
 	}
 }
 
@@ -344,12 +390,13 @@ func TestBuildPodSpec_PrivilegedSettings(t *testing.T) {
 		labels           []string
 		expectPrivileged bool
 		containerName    string
+		isInitContainer  bool // true if container is in InitContainers (native sidecar)
 		description      string
 	}{
-		{RunnerModeStandard, nil, false, "runner", "standard runner should not be privileged"},
-		{RunnerModeUserNS, nil, false, "runner", "userns runner should not be privileged"},
-		{RunnerModeDinD, []string{"docker"}, true, "dind", "dind sidecar should be privileged"},
-		{RunnerModeDinDRootless, []string{"docker"}, true, "runner", "dind-rootless runner should be privileged"},
+		{RunnerModeStandard, nil, false, "runner", false, "standard runner should not be privileged"},
+		{RunnerModeUserNS, nil, false, "runner", false, "userns runner should not be privileged"},
+		{RunnerModeDinD, []string{"docker"}, true, "dind", true, "dind sidecar should be privileged"},
+		{RunnerModeDinDRootless, []string{"docker"}, true, "runner", false, "dind-rootless runner should be privileged"},
 	}
 
 	for _, tt := range tests {
@@ -363,9 +410,13 @@ func TestBuildPodSpec_PrivilegedSettings(t *testing.T) {
 			podSpec := client.buildPodSpec(config, "secret-name")
 
 			var targetContainer *corev1.Container
-			for i := range podSpec.Containers {
-				if podSpec.Containers[i].Name == tt.containerName {
-					targetContainer = &podSpec.Containers[i]
+			containers := podSpec.Containers
+			if tt.isInitContainer {
+				containers = podSpec.InitContainers
+			}
+			for i := range containers {
+				if containers[i].Name == tt.containerName {
+					targetContainer = &containers[i]
 					break
 				}
 			}
@@ -533,7 +584,7 @@ func TestCreateRunnerJob_CreatesSecretAndJob(t *testing.T) {
 		Labels:     []string{"self-hosted", "linux"},
 		RunnerMode: RunnerModeStandard,
 	}
-	err := client.CreateRunnerJob(context.Background(), config)
+	_, err := client.CreateRunnerJob(context.Background(), config)
 	if err != nil {
 		t.Fatalf("CreateRunnerJob failed: %v", err)
 	}
@@ -633,7 +684,7 @@ func TestCreateRunnerJob_CustomTTL(t *testing.T) {
 		RunnerMode: RunnerModeStandard,
 		TTLSeconds: 600, // Custom TTL
 	}
-	err := client.CreateRunnerJob(context.Background(), config)
+	_, err := client.CreateRunnerJob(context.Background(), config)
 	if err != nil {
 		t.Fatalf("CreateRunnerJob failed: %v", err)
 	}
@@ -688,7 +739,7 @@ func TestCreateRunnerJob_HandlesExistingSecret(t *testing.T) {
 		Labels:     []string{"self-hosted"},
 		RunnerMode: RunnerModeStandard,
 	}
-	err := client.CreateRunnerJob(context.Background(), config)
+	_, err := client.CreateRunnerJob(context.Background(), config)
 
 	if err != nil {
 		t.Fatalf("CreateRunnerJob should not error when secret already exists: %v", err)
@@ -896,7 +947,7 @@ func TestCreateRunnerJobWithArchLabels(t *testing.T) {
 				RunnerMode: RunnerModeStandard,
 			}
 
-			err := client.CreateRunnerJob(context.Background(), config)
+			_, err := client.CreateRunnerJob(context.Background(), config)
 			if err != nil {
 				t.Fatalf("CreateRunnerJob failed: %v", err)
 			}

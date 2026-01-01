@@ -46,6 +46,16 @@ var (
 		},
 	)
 
+	RunnerJobCreationDurationSeconds = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: namespace,
+			Name:      "runner_job_creation_duration_seconds",
+			Help:      "Time to create runner job from webhook receipt",
+			Buckets:   []float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+		},
+		[]string{"owner", "repo"},
+	)
+
 	GitHubAPIRequestsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: namespace,
@@ -97,6 +107,24 @@ var (
 			Name:      "reconciler_cycles_total",
 			Help:      "Total number of reconciliation cycles",
 		},
+	)
+
+	OrphanedRunnersCleanedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "orphaned_runners_cleaned_total",
+			Help:      "Total number of orphaned runners cleaned up",
+		},
+		[]string{"owner", "repo", "reason"},
+	)
+
+	OrphanedRunnerCleanupErrorsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: namespace,
+			Name:      "orphaned_runner_cleanup_errors_total",
+			Help:      "Total number of errors during orphaned runner cleanup",
+		},
+		[]string{"owner", "repo"},
 	)
 )
 

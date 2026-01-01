@@ -24,7 +24,7 @@ rules:
   # Manage runner Jobs
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["create", "get", "list", "delete"]
+    verbs: ["create", "get", "list", "watch", "delete"]
   # List runner Pods for reconciler (to check for existing runners)
   - apiGroups: [""]
     resources: ["pods"]

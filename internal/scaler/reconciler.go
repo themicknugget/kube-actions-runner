@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+
 	ghclient "github.com/kube-actions-runner/kube-actions-runner/internal/github"
 	"github.com/kube-actions-runner/kube-actions-runner/internal/k8s"
 	"github.com/kube-actions-runner/kube-actions-runner/internal/logger"
@@ -179,6 +181,9 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 		log.Error("failed to sync active jobs metric", "error", err)
 	}
 
+	// Clean up orphaned runners (runners whose GitHub job is no longer queued)
+	r.cleanupOrphanedRunners(ctx)
+
 	// If we have a specific list of repos to check, use that
 	if len(r.reposToCheck) > 0 {
 		for _, fullRepo := range r.reposToCheck {
@@ -208,6 +213,114 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 	for _, owner := range owners {
 		if err := r.reconcileOwner(ctx, owner); err != nil {
 			log.Error("failed to reconcile owner", "owner", owner, "error", err.Error())
+		}
+	}
+}
+
+// cleanupOrphanedRunners checks all active runner jobs and removes runners
+// whose corresponding GitHub workflow job is no longer queued (completed, cancelled, or taken).
+// Instead of force-deleting pods, it unregisters the runner from GitHub which causes
+// the runner process to exit gracefully.
+func (r *Reconciler) cleanupOrphanedRunners(ctx context.Context) {
+	log := r.logger.With("component", "reconciler", "operation", "cleanup")
+
+	// List all active runner jobs in K8s
+	activeJobs, err := r.k8sClient.ListActiveRunnerJobs(ctx)
+	if err != nil {
+		log.Error("failed to list active runner jobs", "error", err)
+		return
+	}
+
+	if len(activeJobs) == 0 {
+		return
+	}
+
+	log.Debug("checking for orphaned runners", "active_jobs", len(activeJobs))
+
+	for _, job := range activeJobs {
+		// Skip jobs without required metadata
+		if job.Owner == "" || job.Repo == "" || job.JobID == 0 {
+			continue
+		}
+
+		// Only check jobs whose pods are Running (they've had time to register)
+		// Skip Pending pods as they may still be starting up
+		if job.Phase != corev1.PodRunning {
+			continue
+		}
+
+		// Get GitHub client for this owner
+		ghClient, err := r.ghClientFactory.GetClientForOwner(job.Owner)
+		if err != nil {
+			log.Debug("no GitHub client for owner", "owner", job.Owner)
+			continue
+		}
+
+		// Check the status of the GitHub workflow job
+		status, err := ghClient.GetWorkflowJobStatus(ctx, job.Owner, job.Repo, job.JobID)
+		if err != nil {
+			log.Error("failed to get workflow job status",
+				"owner", job.Owner,
+				"repo", job.Repo,
+				"job_id", job.JobID,
+				"error", err)
+			metrics.OrphanedRunnerCleanupErrorsTotal.WithLabelValues(job.Owner, job.Repo).Inc()
+			continue
+		}
+
+		// Determine if the runner is orphaned
+		var cleanupReason string
+
+		if status == nil {
+			// Job not found (404) - it was deleted
+			cleanupReason = "job_not_found"
+		} else if status.Status == "completed" {
+			// Job completed (success, failure, cancelled, etc.)
+			cleanupReason = fmt.Sprintf("completed_%s", status.Conclusion)
+		} else if status.Status == "in_progress" {
+			// Job is being worked on - this is normal, the runner is running the job
+			// No cleanup needed
+			continue
+		} else if status.Status == "queued" {
+			// Job is still queued - runner is waiting for work, this is normal
+			continue
+		}
+
+		if cleanupReason == "" {
+			continue
+		}
+
+		// This runner is orphaned - unregister it from GitHub
+		log.Info("cleaning up orphaned runner",
+			"runner", job.RunnerName,
+			"owner", job.Owner,
+			"repo", job.Repo,
+			"job_id", job.JobID,
+			"reason", cleanupReason,
+			"job_status", status)
+
+		// Delete the runner from GitHub - this causes the runner process to exit
+		// with the message: "The runner registration has been deleted from the server"
+		deleted, err := ghClient.DeleteRunnerByName(ctx, job.Owner, job.Repo, job.RunnerName)
+		if err != nil {
+			log.Error("failed to delete orphaned runner",
+				"runner", job.RunnerName,
+				"error", err)
+			metrics.OrphanedRunnerCleanupErrorsTotal.WithLabelValues(job.Owner, job.Repo).Inc()
+			continue
+		}
+
+		if deleted {
+			log.Info("successfully unregistered orphaned runner",
+				"runner", job.RunnerName,
+				"owner", job.Owner,
+				"repo", job.Repo)
+			metrics.OrphanedRunnersCleanedTotal.WithLabelValues(job.Owner, job.Repo, cleanupReason).Inc()
+		} else {
+			// Runner wasn't found in GitHub - it may have already been removed
+			// This is fine, the pod should exit on its own when it fails to connect
+			log.Debug("orphaned runner not found in GitHub (already removed)",
+				"runner", job.RunnerName)
 		}
 	}
 }
@@ -327,5 +440,6 @@ func (r *Reconciler) createRunnerForJob(ctx context.Context, ghClient *ghclient.
 	}
 
 	// Use the scaler's createRunnerJob to maintain rate limiting
-	return r.scaler.createRunnerJob(ctx, runnerName, jitConfig.EncodedJITConfig, job.Owner, job.Repo, job.ID, job.Labels)
+	_, err = r.scaler.createRunnerJob(ctx, runnerName, jitConfig.EncodedJITConfig, job.Owner, job.Repo, job.ID, job.Labels)
+	return err
 }

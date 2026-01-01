@@ -1,0 +1,65 @@
+{{- if .Values.metrics.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "kube-actions-runner.fullname" . }}
+  namespace: {{ .Values.metrics.prometheusRule.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "kube-actions-runner.labels" . | nindent 4 }}
+    {{- with .Values.metrics.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: kube-actions-runner.rules
+      rules:
+        # Pod scheduling duration: time from pod creation to container start
+        # Requires kube-state-metrics to be installed
+        - record: webhook_scaler:runner_pod_schedule_duration_seconds
+          expr: |
+            (
+              kube_pod_start_time{pod=~"runner-.*"}
+              - on(pod, namespace) kube_pod_created{pod=~"runner-.*"}
+            ) > 0
+          labels:
+            source: "kube-state-metrics"
+
+        # Pod scheduling duration with owner/repo labels for correlation
+        - record: webhook_scaler:runner_pod_schedule_duration_by_repo_seconds
+          expr: |
+            (
+              kube_pod_start_time{pod=~"runner-.*"}
+              - on(pod, namespace) kube_pod_created{pod=~"runner-.*"}
+            )
+            * on(pod, namespace) group_left(label_owner, label_repo)
+            kube_pod_labels{pod=~"runner-.*"}
+          labels:
+            source: "kube-state-metrics"
+
+        # Average pod scheduling duration (5m window)
+        - record: webhook_scaler:runner_pod_schedule_duration_avg_seconds
+          expr: |
+            avg(
+              kube_pod_start_time{pod=~"runner-.*"}
+              - on(pod, namespace) kube_pod_created{pod=~"runner-.*"}
+            )
+
+        # P95 pod scheduling duration (requires histogram_quantile on raw data)
+        # This is an approximation using current pods
+        - record: webhook_scaler:runner_pod_schedule_duration_p95_seconds
+          expr: |
+            quantile(0.95,
+              kube_pod_start_time{pod=~"runner-.*"}
+              - on(pod, namespace) kube_pod_created{pod=~"runner-.*"}
+            )
+
+        # Count of currently pending runner pods
+        - record: webhook_scaler:runner_pods_pending
+          expr: |
+            count(kube_pod_status_phase{pod=~"runner-.*", phase="Pending"}) or vector(0)
+
+        # Count of currently running runner pods
+        - record: webhook_scaler:runner_pods_running
+          expr: |
+            count(kube_pod_status_phase{pod=~"runner-.*", phase="Running"}) or vector(0)
+{{- end }}

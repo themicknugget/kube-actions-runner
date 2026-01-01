@@ -155,6 +155,10 @@ func (s *Scaler) processQueuedJob(ctx context.Context, w http.ResponseWriter, ev
 	}
 
 	runnerName := fmt.Sprintf("runner-%d", jobID)
+
+	// Track job creation time (JIT config + K8s job creation)
+	creationStart := time.Now()
+
 	jitConfig, err := ghClient.GenerateJITConfig(ctx, owner, repo, runnerName, jobLabels)
 	if err != nil {
 		log.Error("failed to generate JIT config", "error", err)
@@ -164,16 +168,18 @@ func (s *Scaler) processQueuedJob(ctx context.Context, w http.ResponseWriter, ev
 
 	log.Info("generated JIT config", "runner_id", jitConfig.RunnerID)
 
-	if err := s.createRunnerJob(ctx, jobName, jitConfig.EncodedJITConfig, owner, repo, jobID, jobLabels); err != nil {
+	actualMode, err := s.createRunnerJob(ctx, jobName, jitConfig.EncodedJITConfig, owner, repo, jobID, jobLabels)
+	if err != nil {
 		log.Error("failed to create runner job", "error", err)
 		respondError(http.StatusInternalServerError, "failed to create job")
 		return
 	}
 
-	metrics.RunnerJobsCreatedTotal.WithLabelValues(owner, repo, string(s.runnerMode)).Inc()
+	metrics.RunnerJobCreationDurationSeconds.WithLabelValues(owner, repo).Observe(time.Since(creationStart).Seconds())
+	metrics.RunnerJobsCreatedTotal.WithLabelValues(owner, repo, string(actualMode)).Inc()
 	metrics.RunnerJobsActive.Inc()
 
-	log.Info("created runner job", "job_name", jobName, "runner_mode", s.runnerMode)
+	log.Info("created runner job", "job_name", jobName, "runner_mode", actualMode)
 	respond(http.StatusOK)
 }
 
@@ -230,7 +236,7 @@ func (s *Scaler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	s.processQueuedJob(ctx, w, event, processRespond, processRespondError)
 }
 
-func (s *Scaler) createRunnerJob(ctx context.Context, name, jitConfig, owner, repo string, workflowID int64, labels []string) error {
+func (s *Scaler) createRunnerJob(ctx context.Context, name, jitConfig, owner, repo string, workflowID int64, labels []string) (k8s.RunnerMode, error) {
 	config := k8s.RunnerJobConfig{
 		Name:        name,
 		JITConfig:   jitConfig,
@@ -249,12 +255,12 @@ func (s *Scaler) createRunnerJob(ctx context.Context, name, jitConfig, owner, re
 	s.jobCreateMu.Lock()
 	defer s.jobCreateMu.Unlock()
 
-	err := s.k8sClient.CreateRunnerJob(ctx, config)
+	result, err := s.k8sClient.CreateRunnerJob(ctx, config)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	// Small delay to let scheduler process the pod before next job is created
 	time.Sleep(150 * time.Millisecond)
-	return nil
+	return result.ActualMode, nil
 }

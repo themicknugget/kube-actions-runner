@@ -118,6 +118,36 @@ func (c *Client) IsJobQueued(ctx context.Context, owner, repo string, jobID int6
 	return job.GetStatus() == "queued", nil
 }
 
+// WorkflowJobStatus represents the status of a workflow job
+type WorkflowJobStatus struct {
+	Status     string // "queued", "in_progress", "completed"
+	Conclusion string // "success", "failure", "cancelled", etc. (only set when completed)
+}
+
+// GetWorkflowJobStatus returns the full status of a workflow job
+// Returns nil status and no error if the job is not found (404)
+func (c *Client) GetWorkflowJobStatus(ctx context.Context, owner, repo string, jobID int64) (*WorkflowJobStatus, error) {
+	const endpoint = "get_job"
+	startTime := time.Now()
+
+	job, resp, err := c.client.Actions.GetWorkflowJobByID(ctx, owner, repo, jobID)
+	c.recordAPIMetrics(endpoint, startTime, resp, err)
+
+	if err != nil {
+		// If job not found, return nil status (job may have been deleted)
+		if resp != nil && resp.StatusCode == 404 {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get workflow job: %w", err)
+	}
+	defer resp.Body.Close()
+
+	return &WorkflowJobStatus{
+		Status:     job.GetStatus(),
+		Conclusion: job.GetConclusion(),
+	}, nil
+}
+
 // QueuedJob represents a queued workflow job
 type QueuedJob struct {
 	ID       int64

@@ -303,3 +303,115 @@ func TestGenerateJITConfig_LabelsPassedCorrectly(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestGetWorkflowJobStatus_ReturnsQueuedStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-RateLimit-Remaining", "4998")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":     12345,
+			"status": "queued",
+			"name":   "test-job",
+		})
+	}))
+	defer server.Close()
+
+	client := newTestClient(server.URL)
+	ctx := context.Background()
+
+	status, err := client.GetWorkflowJobStatus(ctx, "test-owner", "test-repo", 12345)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if status == nil {
+		t.Fatal("expected status, got nil")
+	}
+	if status.Status != "queued" {
+		t.Errorf("expected status 'queued', got %q", status.Status)
+	}
+	if status.Conclusion != "" {
+		t.Errorf("expected empty conclusion, got %q", status.Conclusion)
+	}
+}
+
+func TestGetWorkflowJobStatus_ReturnsCompletedStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-RateLimit-Remaining", "4997")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":         12345,
+			"status":     "completed",
+			"conclusion": "cancelled",
+			"name":       "test-job",
+		})
+	}))
+	defer server.Close()
+
+	client := newTestClient(server.URL)
+	ctx := context.Background()
+
+	status, err := client.GetWorkflowJobStatus(ctx, "test-owner", "test-repo", 12345)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if status == nil {
+		t.Fatal("expected status, got nil")
+	}
+	if status.Status != "completed" {
+		t.Errorf("expected status 'completed', got %q", status.Status)
+	}
+	if status.Conclusion != "cancelled" {
+		t.Errorf("expected conclusion 'cancelled', got %q", status.Conclusion)
+	}
+}
+
+func TestGetWorkflowJobStatus_ReturnsNilOnNotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"message":           "Not Found",
+			"documentation_url": "https://docs.github.com/rest",
+		})
+	}))
+	defer server.Close()
+
+	client := newTestClient(server.URL)
+	ctx := context.Background()
+
+	status, err := client.GetWorkflowJobStatus(ctx, "test-owner", "test-repo", 99999)
+	if err != nil {
+		t.Fatalf("unexpected error on 404: %v", err)
+	}
+
+	if status != nil {
+		t.Errorf("expected nil status for 404, got %+v", status)
+	}
+}
+
+func TestGetWorkflowJobStatus_ReturnsErrorOnServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"message": "Internal Server Error",
+		})
+	}))
+	defer server.Close()
+
+	client := newTestClient(server.URL)
+	ctx := context.Background()
+
+	status, err := client.GetWorkflowJobStatus(ctx, "test-owner", "test-repo", 12345)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	if status != nil {
+		t.Error("expected nil status on error")
+	}
+}

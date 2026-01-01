@@ -211,6 +211,15 @@ metrics:
     # -- Additional annotations for the ConfigMap
     annotations: {}
 
+  prometheusRule:
+    # -- Create a PrometheusRule with recording rules for runner metrics
+    # Derives pod scheduling latency from kube-state-metrics
+    enabled: false
+    # -- Additional labels for the PrometheusRule (e.g., release: kube-prometheus-stack)
+    labels: {}
+    # -- Namespace for the PrometheusRule (defaults to release namespace)
+    namespace: ""
+
 ### Cloudflare Tunnel (Optional)
 cloudflare:
   # -- Enable Cloudflare Tunnel deployment for secure webhook ingress

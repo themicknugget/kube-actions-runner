@@ -212,7 +212,16 @@ func buildTopologySpreadConstraints() []corev1.TopologySpreadConstraint {
 	}
 }
 
-func (c *Client) CreateRunnerJob(ctx context.Context, config RunnerJobConfig) error {
+// CreateRunnerJobResult contains the result of creating a runner job
+type CreateRunnerJobResult struct {
+	// ActualMode is the runner mode that was actually used (may differ from configured mode)
+	ActualMode RunnerMode
+}
+
+func (c *Client) CreateRunnerJob(ctx context.Context, config RunnerJobConfig) (CreateRunnerJobResult, error) {
+	// Determine the actual mode that will be used
+	actualMode := DetermineActualMode(config.RunnerMode, config.Labels)
+
 	secretName := fmt.Sprintf("runner-jit-%s", config.Name)
 
 	jobIDStr := fmt.Sprintf("%d", config.WorkflowID)
@@ -240,17 +249,20 @@ func (c *Client) CreateRunnerJob(ctx context.Context, config RunnerJobConfig) er
 			// Secret exists from a previous attempt - delete and recreate with new JIT config
 			// This is critical: old JIT configs have expired registrations
 			if err := c.clientset.CoreV1().Secrets(c.namespace).Delete(ctx, secretName, metav1.DeleteOptions{}); err != nil {
-				return fmt.Errorf("failed to delete old secret: %w", err)
+				return CreateRunnerJobResult{}, fmt.Errorf("failed to delete old secret: %w", err)
 			}
 			if _, err := c.clientset.CoreV1().Secrets(c.namespace).Create(ctx, secret, metav1.CreateOptions{}); err != nil {
-				return fmt.Errorf("failed to recreate secret: %w", err)
+				return CreateRunnerJobResult{}, fmt.Errorf("failed to recreate secret: %w", err)
 			}
 		} else {
-			return fmt.Errorf("failed to create secret: %w", err)
+			return CreateRunnerJobResult{}, fmt.Errorf("failed to create secret: %w", err)
 		}
 	}
 
-	podSpec := c.buildPodSpec(config, secretName)
+	// Use the actual mode for building the pod spec
+	configWithActualMode := config
+	configWithActualMode.RunnerMode = actualMode
+	podSpec := c.buildPodSpec(configWithActualMode, secretName)
 
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -262,7 +274,7 @@ func (c *Client) CreateRunnerJob(ctx context.Context, config RunnerJobConfig) er
 				"owner":                        config.Owner,
 				"repo":                         config.Repo,
 				"job-id":                       jobIDStr,
-				"runner-mode":                  string(config.RunnerMode),
+				"runner-mode":                  string(actualMode),
 				"managed-by":                   "kube-actions-runner",
 			},
 		},
@@ -277,7 +289,7 @@ func (c *Client) CreateRunnerJob(ctx context.Context, config RunnerJobConfig) er
 						"owner":                        config.Owner,
 						"repo":                         config.Repo,
 						"job-id":                       jobIDStr,
-						"runner-mode":                  string(config.RunnerMode),
+						"runner-mode":                  string(actualMode),
 						"managed-by":                   "kube-actions-runner",
 					},
 				},
@@ -288,10 +300,10 @@ func (c *Client) CreateRunnerJob(ctx context.Context, config RunnerJobConfig) er
 
 	_, err = c.clientset.BatchV1().Jobs(c.namespace).Create(ctx, job, metav1.CreateOptions{})
 	if err != nil && !errors.IsAlreadyExists(err) {
-		return fmt.Errorf("failed to create job: %w", err)
+		return CreateRunnerJobResult{}, fmt.Errorf("failed to create job: %w", err)
 	}
 
-	return nil
+	return CreateRunnerJobResult{ActualMode: actualMode}, nil
 }
 
 // hasDockerLabel checks if the "docker" label is present in the workflow labels
@@ -304,15 +316,25 @@ func hasDockerLabel(labels []string) bool {
 	return false
 }
 
-func (c *Client) buildPodSpec(config RunnerJobConfig, secretName string) corev1.PodSpec {
-	mode := config.RunnerMode
-	if mode == "" {
-		mode = RunnerModeStandard
+// DetermineActualMode returns the mode that will actually be used for a job,
+// taking into account the docker label requirement for dind modes
+func DetermineActualMode(configuredMode RunnerMode, labels []string) RunnerMode {
+	if configuredMode == "" {
+		return RunnerModeStandard
 	}
 
 	// Only use docker modes (dind/dind-rootless) if "docker" label is present
-	// This avoids running the privileged sidecar for jobs that don't need it
-	if (mode == RunnerModeDinD || mode == RunnerModeDinDRootless) && !hasDockerLabel(config.Labels) {
+	if (configuredMode == RunnerModeDinD || configuredMode == RunnerModeDinDRootless) && !hasDockerLabel(labels) {
+		return RunnerModeStandard
+	}
+
+	return configuredMode
+}
+
+func (c *Client) buildPodSpec(config RunnerJobConfig, secretName string) corev1.PodSpec {
+	// Mode should already be determined by DetermineActualMode before calling this
+	mode := config.RunnerMode
+	if mode == "" {
 		mode = RunnerModeStandard
 	}
 
@@ -423,6 +445,8 @@ func (c *Client) buildUserNSPodSpec(config RunnerJobConfig, secretName string) c
 }
 
 // DinD mode: privileged sidecar - use with caution, has full host access
+// Uses Kubernetes 1.28+ native sidecar containers (init container with restartPolicy: Always)
+// The dind sidecar automatically terminates when the main runner container exits
 func (c *Client) buildDinDPodSpec(config RunnerJobConfig, secretName string) corev1.PodSpec {
 	image := config.RunnerImage
 	if image == "" {
@@ -438,19 +462,66 @@ func (c *Client) buildDinDPodSpec(config RunnerJobConfig, secretName string) cor
 		RestartPolicy:             corev1.RestartPolicyNever,
 		NodeSelector:              buildNodeSelector(config.Labels),
 		TopologySpreadConstraints: buildTopologySpreadConstraints(),
-		ShareProcessNamespace:     ptr(true),
 		SecurityContext: &corev1.PodSecurityContext{
 			SeccompProfile: &corev1.SeccompProfile{
 				Type: corev1.SeccompProfileTypeRuntimeDefault,
 			},
 		},
+		// Native sidecar container (K8s 1.28+): init container with restartPolicy: Always
+		// - Starts before main containers and keeps running
+		// - Automatically terminates when all main containers exit
+		// - StartupProbe ensures docker is ready before runner starts
+		InitContainers: []corev1.Container{
+			{
+				Name:  "dind",
+				Image: dindImage,
+				// restartPolicy: Always makes this a native sidecar that:
+				// 1. Starts before main containers
+				// 2. Keeps running alongside main containers
+				// 3. Automatically terminates when main containers exit
+				RestartPolicy: ptr(corev1.ContainerRestartPolicyAlways),
+				SecurityContext: &corev1.SecurityContext{
+					Privileged: ptr(true),
+				},
+				Env: []corev1.EnvVar{
+					{Name: "DOCKER_TLS_CERTDIR", Value: "/certs"},
+				},
+				// StartupProbe ensures dockerd is ready and TLS certs are generated
+				// before the runner container starts
+				StartupProbe: &corev1.Probe{
+					ProbeHandler: corev1.ProbeHandler{
+						Exec: &corev1.ExecAction{
+							// Check that dockerd is responding and TLS client certs exist
+							Command: []string{
+								"sh", "-c",
+								"docker version && test -f /certs/client/ca.pem",
+							},
+						},
+					},
+					InitialDelaySeconds: 1,
+					PeriodSeconds:       2,
+					TimeoutSeconds:      5,
+					FailureThreshold:    30, // Allow up to 60 seconds for dockerd to start
+				},
+				VolumeMounts: []corev1.VolumeMount{
+					{
+						Name:      "docker-certs",
+						MountPath: "/certs/client",
+					},
+					{
+						Name:      "dind-storage",
+						MountPath: "/var/lib/docker",
+					},
+				},
+			},
+		},
 		Containers: []corev1.Container{
 			{
-				Name:  "runner",
-				Image: image,
+				Name:    "runner",
+				Image:   image,
 				Command: []string{"/bin/sh", "-c"},
-				// Run the runner, capture exit code, kill dind sidecar (exact match to avoid matching self), then exit
-				Args: []string{"./run.sh --jitconfig \"$RUNNER_JITCONFIG\"; exitcode=$?; sudo pkill -TERM -x dockerd 2>/dev/null || true; exit $exitcode"},
+				// No need for pkill workaround - native sidecar terminates automatically
+				Args: []string{"./run.sh --jitconfig \"$RUNNER_JITCONFIG\""},
 				Env: []corev1.EnvVar{
 					{
 						Name: "RUNNER_JITCONFIG",
@@ -472,26 +543,6 @@ func (c *Client) buildDinDPodSpec(config RunnerJobConfig, secretName string) cor
 					MountPath: "/certs/client",
 					ReadOnly:  true,
 				}),
-			},
-			{
-				Name:  "dind",
-				Image: dindImage,
-				SecurityContext: &corev1.SecurityContext{
-					Privileged: ptr(true),
-				},
-				Env: []corev1.EnvVar{
-					{Name: "DOCKER_TLS_CERTDIR", Value: "/certs"},
-				},
-				VolumeMounts: []corev1.VolumeMount{
-					{
-						Name:      "docker-certs",
-						MountPath: "/certs/client",
-					},
-					{
-						Name:      "dind-storage",
-						MountPath: "/var/lib/docker",
-					},
-				},
 			},
 		},
 		Volumes: append(commonVolumes(),
@@ -681,6 +732,63 @@ func (c *Client) ListRunnerPods(ctx context.Context) ([]corev1.Pod, error) {
 	return pods.Items, nil
 }
 
+// RunnerJobInfo contains information about a runner job for cleanup purposes
+type RunnerJobInfo struct {
+	Name       string
+	Owner      string
+	Repo       string
+	JobID      int64
+	RunnerName string
+	Phase      corev1.PodPhase
+	IsActive   bool // True if job has active pods and hasn't completed/failed
+}
+
+// ListActiveRunnerJobs lists all active runner jobs with their metadata
+// Returns jobs that are currently running (have active pods and haven't completed)
+func (c *Client) ListActiveRunnerJobs(ctx context.Context) ([]RunnerJobInfo, error) {
+	jobs, err := c.clientset.BatchV1().Jobs(c.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "app=github-runner",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list runner jobs: %w", err)
+	}
+
+	var result []RunnerJobInfo
+	for _, job := range jobs.Items {
+		// Skip completed or failed jobs
+		if job.Status.Succeeded > 0 || job.Status.Failed > 0 {
+			continue
+		}
+
+		// Parse job ID from labels
+		var jobID int64
+		if jobIDStr, ok := job.Labels["job-id"]; ok {
+			fmt.Sscanf(jobIDStr, "%d", &jobID)
+		}
+
+		// Get pod phase for the job's pod
+		podPhase := corev1.PodUnknown
+		pods, err := c.clientset.CoreV1().Pods(c.namespace).List(ctx, metav1.ListOptions{
+			LabelSelector: fmt.Sprintf("job-name=%s", job.Name),
+		})
+		if err == nil && len(pods.Items) > 0 {
+			podPhase = pods.Items[0].Status.Phase
+		}
+
+		result = append(result, RunnerJobInfo{
+			Name:       job.Name,
+			Owner:      job.Labels["owner"],
+			Repo:       job.Labels["repo"],
+			JobID:      jobID,
+			RunnerName: job.Name, // Runner name matches job name
+			Phase:      podPhase,
+			IsActive:   job.Status.Active > 0 || (job.Status.Succeeded == 0 && job.Status.Failed == 0),
+		})
+	}
+
+	return result, nil
+}
+
 // CountActiveRunnerJobs counts the number of active runner jobs
 func (c *Client) CountActiveRunnerJobs(ctx context.Context) (int, error) {
 	jobs, err := c.clientset.BatchV1().Jobs(c.namespace).List(ctx, metav1.ListOptions{
@@ -710,8 +818,8 @@ func (c *Client) SyncActiveJobsMetric(ctx context.Context) error {
 	return nil
 }
 
-// StartJobWatcher starts an informer to watch for job completions and update metrics
-// Returns a stop function to cancel the watcher
+// StartJobWatcher starts an informer to watch for job completions and update metrics.
+// Returns a stop function to cancel the watcher.
 func (c *Client) StartJobWatcher(ctx context.Context) (func(), error) {
 	// Create a shared informer factory scoped to our namespace
 	factory := informers.NewSharedInformerFactoryWithOptions(
@@ -722,7 +830,6 @@ func (c *Client) StartJobWatcher(ctx context.Context) (func(), error) {
 
 	jobInformer := factory.Batch().V1().Jobs().Informer()
 
-	// Track jobs we've seen complete to avoid double-decrementing
 	_, err := jobInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		UpdateFunc: func(oldObj, newObj interface{}) {
 			oldJob, ok1 := oldObj.(*batchv1.Job)
