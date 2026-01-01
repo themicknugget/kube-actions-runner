@@ -27,6 +27,7 @@ type Scaler struct {
 	ttlSeconds      int32
 	skipNodeCheck   bool
 	jobCreateMu     sync.Mutex // Serializes job creation for better topology spread
+	reconciler      *Reconciler // For recording activity to trigger faster polling
 }
 
 type Config struct {
@@ -54,6 +55,19 @@ func NewScaler(cfg Config) *Scaler {
 		dindImage:       cfg.DindImage,
 		ttlSeconds:      cfg.TTLSeconds,
 		skipNodeCheck:   cfg.SkipNodeCheck,
+	}
+}
+
+// SetReconciler sets the reconciler reference for activity recording.
+// This allows webhook events to trigger faster polling in the reconciler.
+func (s *Scaler) SetReconciler(r *Reconciler) {
+	s.reconciler = r
+}
+
+// recordActivity notifies the reconciler that workflow activity occurred
+func (s *Scaler) recordActivity() {
+	if s.reconciler != nil {
+		s.reconciler.RecordActivity()
 	}
 }
 
@@ -87,6 +101,9 @@ func (s *Scaler) shouldProcessEvent(event *github.WorkflowJobEvent) (bool, strin
 }
 
 func (s *Scaler) processQueuedJob(ctx context.Context, w http.ResponseWriter, event *github.WorkflowJobEvent, respond func(int), respondError func(int, string)) {
+	// Record activity to trigger faster reconciler polling
+	s.recordActivity()
+
 	owner := event.GetRepo().GetOwner().GetLogin()
 	repo := event.GetRepo().GetName()
 	jobID := event.GetWorkflowJob().GetID()

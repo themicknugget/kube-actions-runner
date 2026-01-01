@@ -122,8 +122,11 @@ func (r *Reconciler) Start(ctx context.Context) {
 	}
 }
 
-// recordActivity marks that workflow activity was detected
-func (r *Reconciler) recordActivity() {
+// RecordActivity marks that workflow activity was detected.
+// This is called by both the reconciler (when finding queued jobs) and
+// the webhook handler (when receiving workflow events) to trigger
+// more frequent polling.
+func (r *Reconciler) RecordActivity() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.lastActivityTime = time.Now()
@@ -362,7 +365,7 @@ func (r *Reconciler) reconcileRepo(ctx context.Context, ghClient *ghclient.Clien
 	}
 
 	// Record activity - queued jobs found means we should poll more frequently
-	r.recordActivity()
+	r.RecordActivity()
 
 	// Get existing runner pods
 	existingPods, err := r.k8sClient.ListRunnerPods(ctx)

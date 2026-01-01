@@ -236,6 +236,10 @@ func main() {
 			LabelMatchers:    labelMatchers,
 		})
 
+		// Wire up the scaler to the reconciler for activity recording
+		// This allows webhook events to trigger faster polling
+		s.SetReconciler(reconciler)
+
 		var reconcilerCtx context.Context
 		reconcilerCtx, reconcilerCancel = context.WithCancel(context.Background())
 		go reconciler.Start(reconcilerCtx)
