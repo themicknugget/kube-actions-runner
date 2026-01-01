@@ -53,7 +53,7 @@ rules:
   # Manage runner Jobs
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["create", "get", "list", "watch", "delete"]
+    verbs: ["create", "get", "list", "watch", "delete", "patch", "update"]
   # List runner Pods for reconciler (to check for existing runners)
   - apiGroups: [""]
     resources: ["pods"]
