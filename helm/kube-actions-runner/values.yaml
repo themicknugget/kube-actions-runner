@@ -194,6 +194,23 @@ metrics:
     # -- Metric path
     path: /metrics
 
+  grafanaDashboard:
+    # -- Create a ConfigMap with Grafana dashboard JSON
+    # The dashboard is auto-discovered by Grafana's sidecar when using
+    # the grafana Helm chart with sidecar.dashboards.enabled=true
+    enabled: false
+    # -- Namespace where the dashboard ConfigMap should be created
+    # Leave empty to use the release namespace
+    namespace: ""
+    # -- Label key that Grafana sidecar watches for dashboard ConfigMaps
+    label: grafana_dashboard
+    # -- Label value for the dashboard label
+    labelValue: "1"
+    # -- Folder in Grafana UI where the dashboard will appear
+    folder: "Kubernetes"
+    # -- Additional annotations for the ConfigMap
+    annotations: {}
+
 ### Cloudflare Tunnel (Optional)
 cloudflare:
   # -- Enable Cloudflare Tunnel deployment for secure webhook ingress
