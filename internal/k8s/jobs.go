@@ -4,13 +4,18 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
+
+	"github.com/kube-actions-runner/kube-actions-runner/internal/metrics"
 )
 
 type RunnerMode string
@@ -674,4 +679,111 @@ func (c *Client) ListRunnerPods(ctx context.Context) ([]corev1.Pod, error) {
 		return nil, fmt.Errorf("failed to list runner pods: %w", err)
 	}
 	return pods.Items, nil
+}
+
+// CountActiveRunnerJobs counts the number of active runner jobs
+func (c *Client) CountActiveRunnerJobs(ctx context.Context) (int, error) {
+	jobs, err := c.clientset.BatchV1().Jobs(c.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "app=github-runner",
+	})
+	if err != nil {
+		return 0, fmt.Errorf("failed to list runner jobs: %w", err)
+	}
+
+	activeCount := 0
+	for _, job := range jobs.Items {
+		// A job is active if it has active pods and hasn't completed or failed
+		if job.Status.Active > 0 && job.Status.Succeeded == 0 && job.Status.Failed == 0 {
+			activeCount++
+		}
+	}
+	return activeCount, nil
+}
+
+// SyncActiveJobsMetric queries K8s and sets the RunnerJobsActive gauge to the actual count
+func (c *Client) SyncActiveJobsMetric(ctx context.Context) error {
+	count, err := c.CountActiveRunnerJobs(ctx)
+	if err != nil {
+		return err
+	}
+	metrics.RunnerJobsActive.Set(float64(count))
+	return nil
+}
+
+// StartJobWatcher starts an informer to watch for job completions and update metrics
+// Returns a stop function to cancel the watcher
+func (c *Client) StartJobWatcher(ctx context.Context) (func(), error) {
+	// Create a shared informer factory scoped to our namespace
+	factory := informers.NewSharedInformerFactoryWithOptions(
+		c.clientset,
+		30*time.Second, // Resync period
+		informers.WithNamespace(c.namespace),
+	)
+
+	jobInformer := factory.Batch().V1().Jobs().Informer()
+
+	// Track jobs we've seen complete to avoid double-decrementing
+	_, err := jobInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		UpdateFunc: func(oldObj, newObj interface{}) {
+			oldJob, ok1 := oldObj.(*batchv1.Job)
+			newJob, ok2 := newObj.(*batchv1.Job)
+			if !ok1 || !ok2 {
+				return
+			}
+
+			// Only process jobs with our label
+			if newJob.Labels["app"] != "github-runner" {
+				return
+			}
+
+			// Check if job just completed (was active, now succeeded or failed)
+			wasActive := oldJob.Status.Active > 0 || (oldJob.Status.Succeeded == 0 && oldJob.Status.Failed == 0 && oldJob.Status.Active == 0 && oldJob.Status.StartTime != nil)
+			isCompleted := newJob.Status.Succeeded > 0 || newJob.Status.Failed > 0
+
+			if wasActive && isCompleted {
+				metrics.RunnerJobsActive.Dec()
+			}
+		},
+		DeleteFunc: func(obj interface{}) {
+			job, ok := obj.(*batchv1.Job)
+			if !ok {
+				// Handle DeletedFinalStateUnknown
+				if tombstone, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+					job, ok = tombstone.Obj.(*batchv1.Job)
+					if !ok {
+						return
+					}
+				} else {
+					return
+				}
+			}
+
+			// Only process jobs with our label
+			if job.Labels["app"] != "github-runner" {
+				return
+			}
+
+			// If job was deleted while still active, decrement
+			if job.Status.Active > 0 || (job.Status.Succeeded == 0 && job.Status.Failed == 0) {
+				metrics.RunnerJobsActive.Dec()
+			}
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to add event handler: %w", err)
+	}
+
+	// Create stop channel
+	stopCh := make(chan struct{})
+
+	// Start the informer
+	go factory.Start(stopCh)
+
+	// Wait for cache sync
+	if !cache.WaitForCacheSync(ctx.Done(), jobInformer.HasSynced) {
+		close(stopCh)
+		return nil, fmt.Errorf("failed to sync job informer cache")
+	}
+
+	return func() { close(stopCh) }, nil
 }

@@ -173,6 +173,12 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 	log.Debug("starting reconciliation cycle")
 	metrics.ReconcilerCyclesTotal.Inc()
 
+	// Sync the active jobs gauge to ensure it reflects actual state
+	// This provides self-healing if the watcher misses events
+	if err := r.k8sClient.SyncActiveJobsMetric(ctx); err != nil {
+		log.Error("failed to sync active jobs metric", "error", err)
+	}
+
 	// If we have a specific list of repos to check, use that
 	if len(r.reposToCheck) > 0 {
 		for _, fullRepo := range r.reposToCheck {

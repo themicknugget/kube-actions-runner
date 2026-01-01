@@ -61,6 +61,28 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Sync active jobs metric on startup to ensure gauge reflects actual state
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := k8sClient.SyncActiveJobsMetric(ctx); err != nil {
+		log.Error("failed to sync active jobs metric on startup", "error", err)
+		// Continue anyway - periodic sync will fix it
+	} else {
+		log.Info("synced active jobs metric on startup")
+	}
+	cancel()
+
+	// Start job watcher to track completions and update metrics in real-time
+	var stopJobWatcher func()
+	ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
+	stopJobWatcher, err = k8sClient.StartJobWatcher(ctx)
+	cancel()
+	if err != nil {
+		log.Error("failed to start job watcher", "error", err)
+		// Continue anyway - periodic sync will handle metric updates
+	} else {
+		log.Info("started job watcher for metrics")
+	}
+
 	// Determine webhook secret (may be auto-generated and persisted)
 	webhookSecret := cfg.WebhookSecret
 	secretIsNew := false
@@ -310,6 +332,11 @@ func main() {
 	// Stop the sync goroutine
 	close(stopSync)
 
+	// Stop the job watcher
+	if stopJobWatcher != nil {
+		stopJobWatcher()
+	}
+
 	// Stop the reconciler
 	if reconcilerCancel != nil {
 		reconcilerCancel()
@@ -317,7 +344,7 @@ func main() {
 
 	log.Info("shutting down server")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
