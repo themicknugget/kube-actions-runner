@@ -89,7 +89,7 @@ func main() {
 
 	// Handle webhook auto-registration
 	var webhookManager *webhook.Manager
-	var reconciler *scaler.Reconciler // Declared here for goroutine access, initialized later
+	var reconciler *scaler.Reconciler // Declared here so it can be used by webhook sync goroutine
 	if cfg.WebhookAutoRegister {
 		log.Info("webhook auto-registration enabled",
 			"webhook_url", cfg.WebhookURL,
@@ -141,54 +141,7 @@ func main() {
 			log.Info("persisted new webhook secret to Kubernetes")
 		}
 
-		// Run initial discovery and registration in background
-		// Pass secretIsNew to force update all webhooks when secret was just generated
-		go func(forceUpdate bool, rec *scaler.Reconciler) {
-			if forceUpdate {
-				log.Info("starting initial webhook sync in background (forcing updates - new secret)")
-			} else {
-				log.Info("starting initial webhook sync in background")
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			defer cancel()
-
-			discoverer := discovery.NewDiscoverer(tokenRegistry, log)
-			results, err := webhookManager.SyncWebhooks(ctx, discoverer, forceUpdate)
-			if err != nil {
-				log.Error("initial webhook sync failed", "error", err)
-				return
-			}
-
-			var created, updated, unchanged, errors int
-			var discoveredRepos []string
-			for _, r := range results {
-				if r.Created {
-					created++
-				}
-				if r.Updated {
-					updated++
-				}
-				if r.Unchanged {
-					unchanged++
-				}
-				if r.Error != nil {
-					errors++
-				}
-				// Collect repos with self-hosted workflows for reconciler
-				discoveredRepos = append(discoveredRepos, r.Repo)
-			}
-			log.Info("initial webhook sync complete",
-				"created", created,
-				"updated", updated,
-				"unchanged", unchanged,
-				"errors", errors,
-			)
-
-			// Update reconciler with discovered repos
-			if rec != nil && len(discoveredRepos) > 0 {
-				rec.SetReposToCheck(discoveredRepos)
-			}
-		}(secretIsNew, reconciler)
+		// Initial webhook sync will be started after reconciler is created
 	}
 
 	log.Info("starting kube-actions-runner",
@@ -245,6 +198,57 @@ func main() {
 		go reconciler.Start(reconcilerCtx)
 	}
 
+	// Run initial webhook discovery and registration in background
+	// This must run after reconciler is created so we can pass discovered repos to it
+	if cfg.WebhookAutoRegister && webhookManager != nil {
+		go func(forceUpdate bool, rec *scaler.Reconciler) {
+			if forceUpdate {
+				log.Info("starting initial webhook sync in background (forcing updates - new secret)")
+			} else {
+				log.Info("starting initial webhook sync in background")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+
+			discoverer := discovery.NewDiscoverer(tokenRegistry, log)
+			results, err := webhookManager.SyncWebhooks(ctx, discoverer, forceUpdate)
+			if err != nil {
+				log.Error("initial webhook sync failed", "error", err)
+				return
+			}
+
+			var created, updated, unchanged, errors int
+			var discoveredRepos []string
+			for _, r := range results {
+				if r.Created {
+					created++
+				}
+				if r.Updated {
+					updated++
+				}
+				if r.Unchanged {
+					unchanged++
+				}
+				if r.Error != nil {
+					errors++
+				}
+				// Collect repos with self-hosted workflows for reconciler
+				discoveredRepos = append(discoveredRepos, r.Repo)
+			}
+			log.Info("initial webhook sync complete",
+				"created", created,
+				"updated", updated,
+				"unchanged", unchanged,
+				"errors", errors,
+			)
+
+			// Update reconciler with discovered repos
+			if rec != nil && len(discoveredRepos) > 0 {
+				rec.SetReposToCheck(discoveredRepos)
+			}
+		}(secretIsNew, reconciler)
+	}
+
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
@@ -273,7 +277,7 @@ func main() {
 	// Start periodic webhook sync if enabled
 	stopSync := make(chan struct{})
 	if cfg.WebhookAutoRegister && cfg.WebhookSyncInterval > 0 {
-		go func() {
+		go func(rec *scaler.Reconciler) {
 			ticker := time.NewTicker(cfg.WebhookSyncInterval)
 			defer ticker.Stop()
 
@@ -291,6 +295,7 @@ func main() {
 						log.Error("periodic webhook sync failed", "error", err)
 					} else {
 						var created, updated, unchanged, errors int
+						var discoveredRepos []string
 						for _, r := range results {
 							if r.Created {
 								created++
@@ -304,6 +309,8 @@ func main() {
 							if r.Error != nil {
 								errors++
 							}
+							// Collect repos with self-hosted workflows for reconciler
+							discoveredRepos = append(discoveredRepos, r.Repo)
 						}
 						if created > 0 || updated > 0 || errors > 0 {
 							log.Info("periodic webhook sync complete",
@@ -313,12 +320,16 @@ func main() {
 								"errors", errors,
 							)
 						}
+						// Update reconciler with discovered repos
+						if rec != nil && len(discoveredRepos) > 0 {
+							rec.SetReposToCheck(discoveredRepos)
+						}
 					}
 				case <-stopSync:
 					return
 				}
 			}
-		}()
+		}(reconciler)
 	}
 
 	go func() {

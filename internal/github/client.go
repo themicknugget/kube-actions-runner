@@ -3,11 +3,18 @@ package github
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/go-github/v57/github"
 	"github.com/kube-actions-runner/kube-actions-runner/internal/metrics"
 	"github.com/kube-actions-runner/kube-actions-runner/internal/tokens"
+)
+
+// rateLimitStore holds the last known rate limit remaining for each owner
+var (
+	rateLimitStore   = make(map[string]int)
+	rateLimitStoreMu sync.RWMutex
 )
 
 type Client struct {
@@ -86,7 +93,22 @@ func (c *Client) recordAPIMetrics(endpoint string, startTime time.Time, resp *gi
 
 	if resp.Rate.Remaining >= 0 {
 		metrics.GitHubAPIRateLimitRemaining.WithLabelValues(c.owner).Set(float64(resp.Rate.Remaining))
+		// Store rate limit for this owner
+		rateLimitStoreMu.Lock()
+		rateLimitStore[c.owner] = resp.Rate.Remaining
+		rateLimitStoreMu.Unlock()
 	}
+}
+
+// GetRateLimitRemaining returns the last known rate limit remaining for an owner.
+// Returns -1 if no rate limit information is available for the owner.
+func GetRateLimitRemaining(owner string) int {
+	rateLimitStoreMu.RLock()
+	defer rateLimitStoreMu.RUnlock()
+	if remaining, ok := rateLimitStore[owner]; ok {
+		return remaining
+	}
+	return -1
 }
 
 type JITConfig struct {
@@ -165,12 +187,12 @@ func (c *Client) GetWorkflowJobStatus(ctx context.Context, owner, repo string, j
 
 // QueuedJob represents a queued workflow job
 type QueuedJob struct {
-	ID       int64
-	Name     string
-	Owner    string
-	Repo     string
-	Labels   []string
-	RunID    int64
+	ID     int64
+	Name   string
+	Owner  string
+	Repo   string
+	Labels []string
+	RunID  int64
 }
 
 // ListRepositories lists all repositories for an owner (user or org)
@@ -244,12 +266,20 @@ func (c *Client) listUserRepositories(ctx context.Context, owner string) ([]stri
 	return repos, nil
 }
 
-// ListQueuedJobs lists all queued workflow jobs for a repository
+// ListQueuedJobs lists all queued workflow jobs for a repository.
+// This function only checks "queued" workflow runs, not "in_progress" ones.
+// Jobs in "in_progress" runs already have runners assigned, and new jobs are
+// handled by webhooks. The reconciler uses this as a backup to catch any
+// jobs that may have been missed by webhooks.
 func (c *Client) ListQueuedJobs(ctx context.Context, owner, repo string) ([]QueuedJob, error) {
 	const endpoint = "list_workflow_runs"
 	var queuedJobs []QueuedJob
 
-	// List workflow runs that are queued or in_progress (to catch queued jobs within)
+	// Only list workflow runs with "queued" status.
+	// We don't check "in_progress" runs because:
+	// 1. Jobs in in_progress runs already have runners assigned
+	// 2. New jobs are handled by webhooks - this is just a backup reconciliation
+	// 3. This reduces API calls by 50% per repository
 	opts := &github.ListWorkflowRunsOptions{
 		Status:      "queued",
 		ListOptions: github.ListOptions{PerPage: 100},
@@ -266,32 +296,13 @@ func (c *Client) ListQueuedJobs(ctx context.Context, owner, repo string) ([]Queu
 		defer resp.Body.Close()
 	}
 
-	// For each run, get the jobs
+	// For each queued run, get the individual jobs
 	for _, run := range runs.WorkflowRuns {
 		jobs, err := c.listJobsForRun(ctx, owner, repo, run.GetID())
 		if err != nil {
 			continue // Skip runs we can't get jobs for
 		}
 		queuedJobs = append(queuedJobs, jobs...)
-	}
-
-	// Also check in_progress runs which may have queued jobs
-	opts.Status = "in_progress"
-	startTime = time.Now()
-	runs, resp, err = c.client.Actions.ListRepositoryWorkflowRuns(ctx, owner, repo, opts)
-	c.recordAPIMetrics(endpoint, startTime, resp, err)
-
-	if err == nil {
-		if resp != nil && resp.Body != nil {
-			defer resp.Body.Close()
-		}
-		for _, run := range runs.WorkflowRuns {
-			jobs, err := c.listJobsForRun(ctx, owner, repo, run.GetID())
-			if err != nil {
-				continue
-			}
-			queuedJobs = append(queuedJobs, jobs...)
-		}
 	}
 
 	return queuedJobs, nil

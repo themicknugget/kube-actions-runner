@@ -15,19 +15,22 @@ import (
 	"github.com/kube-actions-runner/kube-actions-runner/internal/metrics"
 )
 
+// rateLimitThreshold is the minimum rate limit remaining before skipping reconciliation
+const rateLimitThreshold = 100
+
 // Reconciler periodically checks for queued GitHub Actions jobs
 // and creates runner pods for any that don't have one
 type Reconciler struct {
-	ghClientFactory *ghclient.ClientFactory
-	k8sClient       *k8s.Client
-	scaler          *Scaler
-	logger          *logger.Logger
-	interval        time.Duration // Normal interval (default 5 minutes)
-	activeInterval  time.Duration // Active interval when jobs are queued (default 30 seconds)
+	ghClientFactory  *ghclient.ClientFactory
+	k8sClient        *k8s.Client
+	scaler           *Scaler
+	logger           *logger.Logger
+	interval         time.Duration // Normal interval (default 5 minutes)
+	activeInterval   time.Duration // Active interval when jobs are queued (default 60 seconds)
 	inactivityWindow time.Duration // Time before returning to normal interval (default 10 minutes)
-	labelMatchers   []LabelMatcher
+	labelMatchers    []LabelMatcher
 	// reposToCheck is a list of owner/repo pairs to check for queued jobs
-	// If empty, all repos will be checked (expensive)
+	// This is populated by webhook discovery. If empty, reconciliation is skipped.
 	reposToCheck []string
 
 	// Activity tracking for adaptive intervals
@@ -43,10 +46,11 @@ type ReconcilerConfig struct {
 	Scaler           *Scaler
 	Logger           *logger.Logger
 	Interval         time.Duration // Normal interval (default 5 minutes)
-	ActiveInterval   time.Duration // Active interval when jobs are queued (default 30 seconds)
+	ActiveInterval   time.Duration // Active interval when jobs are queued (default 60 seconds)
 	InactivityWindow time.Duration // Time before returning to normal interval (default 10 minutes)
 	LabelMatchers    []LabelMatcher
-	// ReposToCheck is a list of owner/repo pairs to check (from discovery)
+	// ReposToCheck is a list of owner/repo pairs to check (from webhook discovery)
+	// If empty, reconciliation will be skipped until discovery completes.
 	ReposToCheck []string
 }
 
@@ -60,7 +64,7 @@ func NewReconciler(cfg ReconcilerConfig) *Reconciler {
 
 	activeInterval := cfg.ActiveInterval
 	if activeInterval == 0 {
-		activeInterval = 30 * time.Second
+		activeInterval = 60 * time.Second
 	}
 
 	inactivityWindow := cfg.InactivityWindow
@@ -132,6 +136,22 @@ func (r *Reconciler) RecordActivity() {
 	r.lastActivityTime = time.Now()
 }
 
+// isRateLimitLow checks if any owner has a rate limit below the threshold.
+// Returns the owner name and remaining limit if low, or empty string and -1 if OK.
+func (r *Reconciler) isRateLimitLow() (string, int) {
+	registry := r.ghClientFactory.GetRegistry()
+	owners := registry.GetConfiguredOwners()
+
+	for _, owner := range owners {
+		remaining := ghclient.GetRateLimitRemaining(owner)
+		// Skip if we don't have rate limit info yet (returns -1)
+		if remaining >= 0 && remaining < rateLimitThreshold {
+			return owner, remaining
+		}
+	}
+	return "", -1
+}
+
 // calculateInterval determines the appropriate interval based on recent activity
 func (r *Reconciler) calculateInterval() time.Duration {
 	r.mu.Lock()
@@ -178,6 +198,16 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 	log.Debug("starting reconciliation cycle")
 	metrics.ReconcilerCyclesTotal.Inc()
 
+	// Check rate limit before making API calls
+	if owner, remaining := r.isRateLimitLow(); owner != "" {
+		log.Warn("skipping reconciliation cycle due to low rate limit",
+			"owner", owner,
+			"remaining", remaining,
+			"threshold", rateLimitThreshold,
+		)
+		return
+	}
+
 	// Sync the active jobs gauge to ensure it reflects actual state
 	// This provides self-healing if the watcher misses events
 	if err := r.k8sClient.SyncActiveJobsMetric(ctx); err != nil {
@@ -187,35 +217,28 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 	// Clean up orphaned runners (runners whose GitHub job is no longer queued)
 	r.cleanupOrphanedRunners(ctx)
 
-	// If we have a specific list of repos to check, use that
-	if len(r.reposToCheck) > 0 {
-		for _, fullRepo := range r.reposToCheck {
-			parts := strings.SplitN(fullRepo, "/", 2)
-			if len(parts) != 2 {
-				continue
-			}
-			owner, repo := parts[0], parts[1]
-
-			ghClient, err := r.ghClientFactory.GetClientForOwner(owner)
-			if err != nil {
-				log.Error("failed to get GitHub client", "owner", owner, "error", err.Error())
-				continue
-			}
-
-			if err := r.reconcileRepo(ctx, ghClient, owner, repo); err != nil {
-				log.Error("failed to reconcile repo", "repo", fullRepo, "error", err.Error())
-			}
-		}
+	// Only check repos that were discovered via webhook sync
+	// If no repos are configured, skip this cycle (waiting for discovery to complete)
+	if len(r.reposToCheck) == 0 {
+		log.Debug("no repos configured for reconciliation, waiting for webhook discovery")
 		return
 	}
 
-	// Fallback: Get all configured owners and check all repos (expensive)
-	registry := r.ghClientFactory.GetRegistry()
-	owners := registry.GetConfiguredOwners()
+	for _, fullRepo := range r.reposToCheck {
+		parts := strings.SplitN(fullRepo, "/", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		owner, repo := parts[0], parts[1]
 
-	for _, owner := range owners {
-		if err := r.reconcileOwner(ctx, owner); err != nil {
-			log.Error("failed to reconcile owner", "owner", owner, "error", err.Error())
+		ghClient, err := r.ghClientFactory.GetClientForOwner(owner)
+		if err != nil {
+			log.Error("failed to get GitHub client", "owner", owner, "error", err.Error())
+			continue
+		}
+
+		if err := r.reconcileRepo(ctx, ghClient, owner, repo); err != nil {
+			log.Error("failed to reconcile repo", "repo", fullRepo, "error", err.Error())
 		}
 	}
 }
@@ -243,6 +266,15 @@ func (r *Reconciler) cleanupOrphanedRunners(ctx context.Context) {
 	for _, job := range activeJobs {
 		// Skip jobs without required metadata
 		if job.Owner == "" || job.Repo == "" || job.JobID == 0 {
+			continue
+		}
+
+		// Skip jobs where cleanup was already attempted (prevents retry storms)
+		if job.CleanupAttempted {
+			log.Debug("skipping job with previous cleanup attempt",
+				"runner", job.RunnerName,
+				"owner", job.Owner,
+				"repo", job.Repo)
 			continue
 		}
 
@@ -310,6 +342,12 @@ func (r *Reconciler) cleanupOrphanedRunners(ctx context.Context) {
 				"runner", job.RunnerName,
 				"error", err)
 			metrics.OrphanedRunnerCleanupErrorsTotal.WithLabelValues(job.Owner, job.Repo).Inc()
+			// Mark cleanup as attempted to prevent retry storms
+			if markErr := r.k8sClient.MarkCleanupAttempted(ctx, job.Name); markErr != nil {
+				log.Error("failed to mark cleanup attempted",
+					"job", job.Name,
+					"error", markErr)
+			}
 			continue
 		}
 
@@ -321,34 +359,16 @@ func (r *Reconciler) cleanupOrphanedRunners(ctx context.Context) {
 			metrics.OrphanedRunnersCleanedTotal.WithLabelValues(job.Owner, job.Repo, cleanupReason).Inc()
 		} else {
 			// Runner wasn't found in GitHub - it may have already been removed
-			// This is fine, the pod should exit on its own when it fails to connect
-			log.Debug("orphaned runner not found in GitHub (already removed)",
+			// Mark cleanup as attempted to prevent retry storms on subsequent cycles
+			log.Info("orphaned runner not found in GitHub (already removed), marking cleanup attempted",
 				"runner", job.RunnerName)
+			if markErr := r.k8sClient.MarkCleanupAttempted(ctx, job.Name); markErr != nil {
+				log.Error("failed to mark cleanup attempted",
+					"job", job.Name,
+					"error", markErr)
+			}
 		}
 	}
-}
-
-func (r *Reconciler) reconcileOwner(ctx context.Context, owner string) error {
-	log := r.logger.With("component", "reconciler", "owner", owner)
-
-	ghClient, err := r.ghClientFactory.GetClientForOwner(owner)
-	if err != nil {
-		return fmt.Errorf("failed to get GitHub client: %w", err)
-	}
-
-	// List repositories for this owner
-	repos, err := ghClient.ListRepositories(ctx, owner)
-	if err != nil {
-		return fmt.Errorf("failed to list repositories: %w", err)
-	}
-
-	for _, repo := range repos {
-		if err := r.reconcileRepo(ctx, ghClient, owner, repo); err != nil {
-			log.Error("failed to reconcile repo", "repo", repo, "error", err.Error())
-		}
-	}
-
-	return nil
 }
 
 func (r *Reconciler) reconcileRepo(ctx context.Context, ghClient *ghclient.Client, owner, repo string) error {

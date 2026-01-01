@@ -170,7 +170,7 @@ func Load() (*Config, error) {
 		}
 		cfg.ReconcilerActiveInterval = interval
 	} else {
-		cfg.ReconcilerActiveInterval = 30 * time.Second
+		cfg.ReconcilerActiveInterval = 60 * time.Second
 	}
 
 	// Inactivity window before returning to normal interval

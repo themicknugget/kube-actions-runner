@@ -732,15 +732,20 @@ func (c *Client) ListRunnerPods(ctx context.Context) ([]corev1.Pod, error) {
 	return pods.Items, nil
 }
 
+// CleanupAttemptedAnnotation is set on jobs where cleanup was attempted but the runner
+// was not found in GitHub. This prevents retry storms when the runner is already gone.
+const CleanupAttemptedAnnotation = "kube-actions-runner.github.io/cleanup-attempted"
+
 // RunnerJobInfo contains information about a runner job for cleanup purposes
 type RunnerJobInfo struct {
-	Name       string
-	Owner      string
-	Repo       string
-	JobID      int64
-	RunnerName string
-	Phase      corev1.PodPhase
-	IsActive   bool // True if job has active pods and hasn't completed/failed
+	Name             string
+	Owner            string
+	Repo             string
+	JobID            int64
+	RunnerName       string
+	Phase            corev1.PodPhase
+	IsActive         bool // True if job has active pods and hasn't completed/failed
+	CleanupAttempted bool // True if cleanup was already attempted
 }
 
 // ListActiveRunnerJobs lists all active runner jobs with their metadata
@@ -775,18 +780,54 @@ func (c *Client) ListActiveRunnerJobs(ctx context.Context) ([]RunnerJobInfo, err
 			podPhase = pods.Items[0].Status.Phase
 		}
 
+		// Check if cleanup was already attempted
+		_, cleanupAttempted := job.Annotations[CleanupAttemptedAnnotation]
+
 		result = append(result, RunnerJobInfo{
-			Name:       job.Name,
-			Owner:      job.Labels["owner"],
-			Repo:       job.Labels["repo"],
-			JobID:      jobID,
-			RunnerName: job.Name, // Runner name matches job name
-			Phase:      podPhase,
-			IsActive:   job.Status.Active > 0 || (job.Status.Succeeded == 0 && job.Status.Failed == 0),
+			Name:             job.Name,
+			Owner:            job.Labels["owner"],
+			Repo:             job.Labels["repo"],
+			JobID:            jobID,
+			RunnerName:       job.Name, // Runner name matches job name
+			Phase:            podPhase,
+			IsActive:         job.Status.Active > 0 || (job.Status.Succeeded == 0 && job.Status.Failed == 0),
+			CleanupAttempted: cleanupAttempted,
 		})
 	}
 
 	return result, nil
+}
+
+// MarkCleanupAttempted adds an annotation to a job indicating that cleanup was attempted.
+// This prevents retry storms when a runner is already gone from GitHub.
+func (c *Client) MarkCleanupAttempted(ctx context.Context, jobName string) error {
+	job, err := c.clientset.BatchV1().Jobs(c.namespace).Get(ctx, jobName, metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			// Job already gone, nothing to mark
+			return nil
+		}
+		return fmt.Errorf("failed to get job %s: %w", jobName, err)
+	}
+
+	// Initialize annotations map if nil
+	if job.Annotations == nil {
+		job.Annotations = make(map[string]string)
+	}
+
+	// Add the cleanup-attempted annotation with current timestamp
+	job.Annotations[CleanupAttemptedAnnotation] = time.Now().UTC().Format(time.RFC3339)
+
+	_, err = c.clientset.BatchV1().Jobs(c.namespace).Update(ctx, job, metav1.UpdateOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			// Job was deleted between get and update, that's fine
+			return nil
+		}
+		return fmt.Errorf("failed to update job %s with cleanup annotation: %w", jobName, err)
+	}
+
+	return nil
 }
 
 // CountActiveRunnerJobs counts the number of active runner jobs
