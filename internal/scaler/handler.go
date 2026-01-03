@@ -121,7 +121,7 @@ func (s *Scaler) processQueuedJob(ctx context.Context, w http.ResponseWriter, ev
 	// Get GitHub client for this owner
 	ghClient, err := s.ghClientFactory.GetClientForOwner(owner)
 	if err != nil {
-		log.Error("no token configured for owner", "error", err)
+		log.Error("no token configured for owner", "error", err.Error())
 		// Return 200 to prevent GitHub from retrying - we can't handle this owner
 		respond(http.StatusOK)
 		return
@@ -131,7 +131,7 @@ func (s *Scaler) processQueuedJob(ctx context.Context, w http.ResponseWriter, ev
 
 	exists, err := s.k8sClient.JobExists(ctx, jobName)
 	if err != nil {
-		log.Error("failed to check job existence", "error", err)
+		log.Error("failed to check job existence", "error", err.Error())
 		respondError(http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -143,7 +143,7 @@ func (s *Scaler) processQueuedJob(ctx context.Context, w http.ResponseWriter, ev
 
 	stillQueued, err := ghClient.IsJobQueued(ctx, owner, repo, jobID)
 	if err != nil {
-		log.Error("failed to verify job status", "error", err)
+		log.Error("failed to verify job status", "error", err.Error())
 		respondError(http.StatusInternalServerError, "failed to verify job status")
 		return
 	}
@@ -159,7 +159,7 @@ func (s *Scaler) processQueuedJob(ctx context.Context, w http.ResponseWriter, ev
 		if requiredArch != "" {
 			hasNodes, err := s.k8sClient.HasNodesForArchitecture(ctx, requiredArch)
 			if err != nil {
-				log.Error("failed to check node availability", "error", err, "arch", requiredArch)
+				log.Error("failed to check node availability", "error", err.Error(), "arch", requiredArch)
 				respondError(http.StatusInternalServerError, "failed to check node availability")
 				return
 			}
@@ -178,7 +178,7 @@ func (s *Scaler) processQueuedJob(ctx context.Context, w http.ResponseWriter, ev
 
 	jitConfig, err := ghClient.GenerateJITConfig(ctx, owner, repo, runnerName, jobLabels)
 	if err != nil {
-		log.Error("failed to generate JIT config", "error", err)
+		log.Error("failed to generate JIT config", "error", err.Error())
 		respondError(http.StatusInternalServerError, "failed to generate JIT config")
 		return
 	}
@@ -187,7 +187,7 @@ func (s *Scaler) processQueuedJob(ctx context.Context, w http.ResponseWriter, ev
 
 	actualMode, err := s.createRunnerJob(ctx, jobName, jitConfig.EncodedJITConfig, owner, repo, jobID, jobLabels)
 	if err != nil {
-		log.Error("failed to create runner job", "error", err)
+		log.Error("failed to create runner job", "error", err.Error())
 		respondError(http.StatusInternalServerError, "failed to create job")
 		return
 	}

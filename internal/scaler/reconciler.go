@@ -37,6 +37,10 @@ type Reconciler struct {
 	mu               sync.Mutex
 	lastActivityTime time.Time
 	isActiveMode     bool
+
+	// activityCh is used to notify the reconciler loop when activity is recorded
+	// This allows immediate transition to active mode without waiting for the ticker
+	activityCh chan struct{}
 }
 
 // ReconcilerConfig holds configuration for the Reconciler
@@ -82,6 +86,7 @@ func NewReconciler(cfg ReconcilerConfig) *Reconciler {
 		inactivityWindow: inactivityWindow,
 		labelMatchers:    cfg.LabelMatchers,
 		reposToCheck:     cfg.ReposToCheck,
+		activityCh:       make(chan struct{}, 1), // Buffered to avoid blocking
 	}
 }
 
@@ -113,6 +118,15 @@ func (r *Reconciler) Start(ctx context.Context) {
 		case <-ctx.Done():
 			log.Info("reconciler stopped")
 			return
+		case <-r.activityCh:
+			// Activity was recorded - switch to active interval immediately
+			newInterval := r.calculateInterval()
+			if newInterval != currentInterval {
+				currentInterval = newInterval
+				ticker.Reset(currentInterval)
+			}
+			// Run reconcile immediately on activity
+			r.reconcile(ctx)
 		case <-ticker.C:
 			r.reconcile(ctx)
 
@@ -132,8 +146,15 @@ func (r *Reconciler) Start(ctx context.Context) {
 // more frequent polling.
 func (r *Reconciler) RecordActivity() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.lastActivityTime = time.Now()
+	r.mu.Unlock()
+
+	// Non-blocking send to notify the reconciler loop
+	// If the channel is full, the reconciler will pick up the activity on next tick
+	select {
+	case r.activityCh <- struct{}{}:
+	default:
+	}
 }
 
 // isRateLimitLow checks if any owner has a rate limit below the threshold.
@@ -211,7 +232,7 @@ func (r *Reconciler) reconcile(ctx context.Context) {
 	// Sync the active jobs gauge to ensure it reflects actual state
 	// This provides self-healing if the watcher misses events
 	if err := r.k8sClient.SyncActiveJobsMetric(ctx); err != nil {
-		log.Error("failed to sync active jobs metric", "error", err)
+		log.Error("failed to sync active jobs metric", "error", err.Error())
 	}
 
 	// Clean up orphaned runners (runners whose GitHub job is no longer queued)
@@ -253,7 +274,7 @@ func (r *Reconciler) cleanupOrphanedRunners(ctx context.Context) {
 	// List all active runner jobs in K8s
 	activeJobs, err := r.k8sClient.ListActiveRunnerJobs(ctx)
 	if err != nil {
-		log.Error("failed to list active runner jobs", "error", err)
+		log.Error("failed to list active runner jobs", "error", err.Error())
 		return
 	}
 
@@ -340,7 +361,7 @@ func (r *Reconciler) cleanupOrphanedRunners(ctx context.Context) {
 		if err != nil {
 			log.Error("failed to delete orphaned runner",
 				"runner", job.RunnerName,
-				"error", err)
+				"error", err.Error())
 			metrics.OrphanedRunnerCleanupErrorsTotal.WithLabelValues(job.Owner, job.Repo).Inc()
 			// Mark cleanup as attempted to prevent retry storms
 			if markErr := r.k8sClient.MarkCleanupAttempted(ctx, job.Name); markErr != nil {
