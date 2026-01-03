@@ -739,6 +739,29 @@ func (c *Client) ListRunnerPods(ctx context.Context) ([]corev1.Pod, error) {
 	return pods.Items, nil
 }
 
+// ListRunnerJobIDs returns a set of job IDs for all runner jobs in the namespace.
+// This is more reliable than checking pods since jobs are created before pods.
+func (c *Client) ListRunnerJobIDs(ctx context.Context) (map[int64]bool, error) {
+	jobs, err := c.clientset.BatchV1().Jobs(c.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "app=github-runner",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list runner jobs: %w", err)
+	}
+
+	result := make(map[int64]bool)
+	for _, job := range jobs.Items {
+		if jobIDStr, ok := job.Labels["job-id"]; ok {
+			var id int64
+			fmt.Sscanf(jobIDStr, "%d", &id)
+			if id > 0 {
+				result[id] = true
+			}
+		}
+	}
+	return result, nil
+}
+
 // IsRunnerPodStale checks if a runner pod is stale (waiting for jobs) by examining its logs.
 // A stale runner will have "Listening for Jobs" as one of its recent log lines.
 // Returns: isStale (true if waiting for jobs), error

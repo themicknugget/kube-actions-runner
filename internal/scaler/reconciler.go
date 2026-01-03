@@ -424,20 +424,11 @@ func (r *Reconciler) reconcileRepo(ctx context.Context, ghClient *ghclient.Clien
 	// Record activity - queued jobs found means we should poll more frequently
 	r.RecordActivity()
 
-	// Get existing runner pods
-	existingPods, err := r.k8sClient.ListRunnerPods(ctx)
+	// Get existing runner job IDs - check jobs not pods since jobs are created first
+	// This prevents race conditions where the webhook creates a job but the pod isn't ready yet
+	existingJobIDs, err := r.k8sClient.ListRunnerJobIDs(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to list runner pods: %w", err)
-	}
-
-	// Create a set of existing job IDs
-	existingJobIDs := make(map[int64]bool)
-	for _, pod := range existingPods {
-		if jobID, ok := pod.Labels["job-id"]; ok {
-			var id int64
-			fmt.Sscanf(jobID, "%d", &id)
-			existingJobIDs[id] = true
-		}
+		return fmt.Errorf("failed to list runner jobs: %w", err)
 	}
 
 	for _, job := range queuedJobs {
