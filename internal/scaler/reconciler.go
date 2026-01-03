@@ -305,6 +305,22 @@ func (r *Reconciler) cleanupOrphanedRunners(ctx context.Context) {
 			continue
 		}
 
+		// Check if the runner is actively processing a job by examining pod logs
+		// If the runner is NOT showing "Listening for Jobs", it's actively working
+		isStale, err := r.k8sClient.IsRunnerPodStale(ctx, job.PodName)
+		if err != nil {
+			log.Debug("failed to check if runner is stale, skipping",
+				"runner", job.RunnerName,
+				"error", err.Error())
+			continue
+		}
+		if !isStale {
+			// Runner is actively processing a job - don't cleanup
+			log.Debug("runner is actively processing, skipping cleanup",
+				"runner", job.RunnerName)
+			continue
+		}
+
 		// Get GitHub client for this owner
 		ghClient, err := r.ghClientFactory.GetClientForOwner(job.Owner)
 		if err != nil {
@@ -463,9 +479,17 @@ func (r *Reconciler) createRunnerForJob(ctx context.Context, ghClient *ghclient.
 	if err != nil {
 		// Check if it's a 409 conflict (stale runner exists)
 		if strings.Contains(err.Error(), "409") && strings.Contains(err.Error(), "Already exists") {
-			log.Info("stale runner found, deleting", "runner_name", runnerName)
+			log.Info("runner already registered in GitHub, checking if stale", "runner_name", runnerName)
+
+			// Try to delete the existing runner
 			deleted, delErr := ghClient.DeleteRunnerByName(ctx, job.Owner, job.Repo, runnerName)
 			if delErr != nil {
+				// Check if deletion failed because runner is actively running a job
+				// This means the job is being processed - no need to create another runner
+				if strings.Contains(delErr.Error(), "422") && strings.Contains(delErr.Error(), "currently running a job") {
+					log.Info("runner is actively processing the job, skipping", "runner_name", runnerName)
+					return nil // Not an error - job is being handled
+				}
 				return fmt.Errorf("failed to delete stale runner: %w", delErr)
 			}
 			if deleted {
@@ -476,7 +500,9 @@ func (r *Reconciler) createRunnerForJob(ctx context.Context, ghClient *ghclient.
 					return fmt.Errorf("failed to generate JIT config after cleanup: %w", err)
 				}
 			} else {
-				return fmt.Errorf("stale runner not found for deletion: %w", err)
+				// Runner not found - might have been cleaned up already, or job completed
+				log.Info("runner not found in GitHub, job may have completed", "runner_name", runnerName)
+				return nil // Not an error - job is likely already handled
 			}
 		} else {
 			return fmt.Errorf("failed to generate JIT config: %w", err)

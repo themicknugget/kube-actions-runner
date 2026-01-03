@@ -1,8 +1,10 @@
 package k8s
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -737,6 +739,46 @@ func (c *Client) ListRunnerPods(ctx context.Context) ([]corev1.Pod, error) {
 	return pods.Items, nil
 }
 
+// IsRunnerPodStale checks if a runner pod is stale (waiting for jobs) by examining its logs.
+// A stale runner will have "Listening for Jobs" as one of its recent log lines.
+// Returns: isStale (true if waiting for jobs), error
+func (c *Client) IsRunnerPodStale(ctx context.Context, podName string) (bool, error) {
+	// Get the last few lines of logs from the runner container
+	tailLines := int64(10)
+	req := c.clientset.CoreV1().Pods(c.namespace).GetLogs(podName, &corev1.PodLogOptions{
+		Container: "runner",
+		TailLines: &tailLines,
+	})
+
+	stream, err := req.Stream(ctx)
+	if err != nil {
+		return false, fmt.Errorf("failed to get pod logs: %w", err)
+	}
+	defer stream.Close()
+
+	// Read the logs and check for "Listening for Jobs"
+	scanner := bufio.NewScanner(stream)
+	var lastLines []string
+	for scanner.Scan() {
+		lastLines = append(lastLines, scanner.Text())
+	}
+
+	if err := scanner.Err(); err != nil && err != io.EOF {
+		return false, fmt.Errorf("failed to read pod logs: %w", err)
+	}
+
+	// Check if "Listening for Jobs" appears in recent logs
+	// This indicates the runner is idle and waiting for work
+	for _, line := range lastLines {
+		if strings.Contains(line, "Listening for Jobs") {
+			return true, nil
+		}
+	}
+
+	// If we don't see "Listening for Jobs", the runner is likely processing a job
+	return false, nil
+}
+
 // CleanupAttemptedAnnotation is set on jobs where cleanup was attempted but the runner
 // was not found in GitHub. This prevents retry storms when the runner is already gone.
 const CleanupAttemptedAnnotation = "kube-actions-runner.github.io/cleanup-attempted"
@@ -744,6 +786,7 @@ const CleanupAttemptedAnnotation = "kube-actions-runner.github.io/cleanup-attemp
 // RunnerJobInfo contains information about a runner job for cleanup purposes
 type RunnerJobInfo struct {
 	Name             string
+	PodName          string          // Name of the pod for log access
 	Owner            string
 	Repo             string
 	JobID            int64
@@ -776,13 +819,15 @@ func (c *Client) ListActiveRunnerJobs(ctx context.Context) ([]RunnerJobInfo, err
 			fmt.Sscanf(jobIDStr, "%d", &jobID)
 		}
 
-		// Get pod phase for the job's pod
+		// Get pod phase and name for the job's pod
 		podPhase := corev1.PodUnknown
+		podName := ""
 		pods, err := c.clientset.CoreV1().Pods(c.namespace).List(ctx, metav1.ListOptions{
 			LabelSelector: fmt.Sprintf("job-name=%s", job.Name),
 		})
 		if err == nil && len(pods.Items) > 0 {
 			podPhase = pods.Items[0].Status.Phase
+			podName = pods.Items[0].Name
 		}
 
 		// Check if cleanup was already attempted
@@ -790,6 +835,7 @@ func (c *Client) ListActiveRunnerJobs(ctx context.Context) ([]RunnerJobInfo, err
 
 		result = append(result, RunnerJobInfo{
 			Name:             job.Name,
+			PodName:          podName,
 			Owner:            job.Labels["owner"],
 			Repo:             job.Labels["repo"],
 			JobID:            jobID,
