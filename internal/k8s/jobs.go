@@ -89,6 +89,11 @@ func NewClient(namespace string) (*Client, error) {
 		return nil, fmt.Errorf("failed to get in-cluster config: %w", err)
 	}
 
+	// Increase rate limits to handle burst webhook traffic
+	// Default is QPS=5, Burst=10 which is too low for 30+ concurrent webhooks
+	config.QPS = 50
+	config.Burst = 100
+
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create clientset: %w", err)
