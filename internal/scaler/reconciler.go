@@ -119,14 +119,14 @@ func (r *Reconciler) Start(ctx context.Context) {
 			log.Info("reconciler stopped")
 			return
 		case <-r.activityCh:
-			// Activity was recorded - switch to active interval immediately
+			// Activity was recorded - switch to active interval
+			// Don't run immediate reconcile - webhooks handle their own jobs
+			// The reconciler is for catching missed jobs, not racing with webhooks
 			newInterval := r.calculateInterval()
 			if newInterval != currentInterval {
 				currentInterval = newInterval
 				ticker.Reset(currentInterval)
 			}
-			// Run reconcile immediately on activity
-			r.reconcile(ctx)
 		case <-ticker.C:
 			r.reconcile(ctx)
 
@@ -424,9 +424,9 @@ func (r *Reconciler) reconcileRepo(ctx context.Context, ghClient *ghclient.Clien
 	// Record activity - queued jobs found means we should poll more frequently
 	r.RecordActivity()
 
-	// Get existing runner job IDs - check jobs not pods since jobs are created first
+	// Get existing runner job states - check jobs not pods since jobs are created first
 	// This prevents race conditions where the webhook creates a job but the pod isn't ready yet
-	existingJobIDs, err := r.k8sClient.ListRunnerJobIDs(ctx)
+	existingJobs, err := r.k8sClient.ListRunnerJobStates(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to list runner jobs: %w", err)
 	}
@@ -438,8 +438,12 @@ func (r *Reconciler) reconcileRepo(ctx context.Context, ghClient *ghclient.Clien
 		}
 
 		// Check if we already have a runner for this job
-		if existingJobIDs[job.ID] {
-			continue
+		if state, exists := existingJobs[job.ID]; exists {
+			// Job exists - check if it's been running long enough to consider stale
+			// Skip jobs less than 60 seconds old - they're still starting up
+			if time.Since(state.CreatedAt) < 60*time.Second {
+				continue
+			}
 		}
 
 		log.Info("creating runner for queued job", "job_id", job.ID, "job_name", job.Name)
