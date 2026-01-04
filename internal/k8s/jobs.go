@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -230,8 +231,9 @@ func (c *Client) CreateRunnerJob(ctx context.Context, config RunnerJobConfig) (C
 	actualMode := DetermineActualMode(config.RunnerMode, config.Labels)
 
 	secretName := fmt.Sprintf("runner-jit-%s", config.Name)
-
 	jobIDStr := fmt.Sprintf("%d", config.WorkflowID)
+
+	// Create the secret first (without OwnerReference) so the pod can mount it immediately
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretName,
@@ -276,13 +278,13 @@ func (c *Client) CreateRunnerJob(ctx context.Context, config RunnerJobConfig) (C
 			Name:      config.Name,
 			Namespace: c.namespace,
 			Labels: map[string]string{
-				"app":                          "github-runner",
+				"app":                         "github-runner",
 				"app.kubernetes.io/component": "runner",
-				"owner":                        config.Owner,
-				"repo":                         config.Repo,
-				"job-id":                       jobIDStr,
-				"runner-mode":                  string(actualMode),
-				"managed-by":                   "kube-actions-runner",
+				"owner":                       config.Owner,
+				"repo":                        config.Repo,
+				"job-id":                      jobIDStr,
+				"runner-mode":                 string(actualMode),
+				"managed-by":                  "kube-actions-runner",
 			},
 		},
 		Spec: batchv1.JobSpec{
@@ -291,13 +293,13 @@ func (c *Client) CreateRunnerJob(ctx context.Context, config RunnerJobConfig) (C
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
-						"app":                          "github-runner",
+						"app":                         "github-runner",
 						"app.kubernetes.io/component": "runner",
-						"owner":                        config.Owner,
-						"repo":                         config.Repo,
-						"job-id":                       jobIDStr,
-						"runner-mode":                  string(actualMode),
-						"managed-by":                   "kube-actions-runner",
+						"owner":                       config.Owner,
+						"repo":                        config.Repo,
+						"job-id":                      jobIDStr,
+						"runner-mode":                 string(actualMode),
+						"managed-by":                  "kube-actions-runner",
 					},
 				},
 				Spec: podSpec,
@@ -305,9 +307,28 @@ func (c *Client) CreateRunnerJob(ctx context.Context, config RunnerJobConfig) (C
 		},
 	}
 
-	_, err = c.clientset.BatchV1().Jobs(c.namespace).Create(ctx, job, metav1.CreateOptions{})
-	if err != nil && !errors.IsAlreadyExists(err) {
-		return CreateRunnerJobResult{}, fmt.Errorf("failed to create job: %w", err)
+	// Create the job
+	createdJob, err := c.clientset.BatchV1().Jobs(c.namespace).Create(ctx, job, metav1.CreateOptions{})
+	if err != nil {
+		if errors.IsAlreadyExists(err) {
+			// Job already exists - get it to retrieve its UID for the secret patch
+			createdJob, err = c.clientset.BatchV1().Jobs(c.namespace).Get(ctx, config.Name, metav1.GetOptions{})
+			if err != nil {
+				return CreateRunnerJobResult{}, fmt.Errorf("failed to get existing job: %w", err)
+			}
+		} else {
+			return CreateRunnerJobResult{}, fmt.Errorf("failed to create job: %w", err)
+		}
+	}
+
+	// Patch the secret to add OwnerReference for garbage collection
+	// This ensures the secret is deleted when the job is deleted by TTL
+	secretPatch := []byte(fmt.Sprintf(`{"metadata":{"ownerReferences":[{"apiVersion":"batch/v1","kind":"Job","name":"%s","uid":"%s"}]}}`,
+		createdJob.Name, createdJob.UID))
+	_, err = c.clientset.CoreV1().Secrets(c.namespace).Patch(ctx, secretName, types.StrategicMergePatchType, secretPatch, metav1.PatchOptions{})
+	if err != nil {
+		// Log but don't fail - the secret will be cleaned up by the orphan cleanup routine
+		// This is a non-critical operation
 	}
 
 	return CreateRunnerJobResult{ActualMode: actualMode}, nil
@@ -737,6 +758,42 @@ func (c *Client) ListRunnerPods(ctx context.Context) ([]corev1.Pod, error) {
 		return nil, fmt.Errorf("failed to list runner pods: %w", err)
 	}
 	return pods.Items, nil
+}
+
+// CleanupOrphanedSecrets deletes runner JIT secrets that don't have an OwnerReference.
+// These are orphaned secrets from before OwnerReferences were added.
+// Returns the number of secrets deleted.
+func (c *Client) CleanupOrphanedSecrets(ctx context.Context) (int, error) {
+	// List all runner JIT secrets
+	secrets, err := c.clientset.CoreV1().Secrets(c.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "app=github-runner,managed-by=kube-actions-runner",
+	})
+	if err != nil {
+		return 0, fmt.Errorf("failed to list runner secrets: %w", err)
+	}
+
+	deleted := 0
+	for _, secret := range secrets.Items {
+		// Skip secrets that have an OwnerReference (they'll be cleaned up automatically)
+		if len(secret.OwnerReferences) > 0 {
+			continue
+		}
+
+		// Skip the webhook secret
+		if secret.Name == WebhookSecretName {
+			continue
+		}
+
+		// This is an orphaned secret - delete it
+		err := c.clientset.CoreV1().Secrets(c.namespace).Delete(ctx, secret.Name, metav1.DeleteOptions{})
+		if err != nil && !errors.IsNotFound(err) {
+			// Log but continue - don't fail the whole cleanup for one secret
+			continue
+		}
+		deleted++
+	}
+
+	return deleted, nil
 }
 
 // RunnerJobState contains the state of a runner job for reconciler decision making

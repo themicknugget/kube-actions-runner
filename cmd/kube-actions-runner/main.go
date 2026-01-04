@@ -71,6 +71,16 @@ func main() {
 	}
 	cancel()
 
+	// Clean up orphaned secrets (from before OwnerReferences were added)
+	ctx, cancel = context.WithTimeout(context.Background(), 60*time.Second)
+	deleted, err := k8sClient.CleanupOrphanedSecrets(ctx)
+	cancel()
+	if err != nil {
+		log.Error("failed to cleanup orphaned secrets", "error", err)
+	} else if deleted > 0 {
+		log.Info("cleaned up orphaned runner secrets", "deleted", deleted)
+	}
+
 	// Start job watcher to track completions and update metrics in real-time
 	var stopJobWatcher func()
 	ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
