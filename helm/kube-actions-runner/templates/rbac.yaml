@@ -58,10 +58,14 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]
+  # Access pod logs for stale runner detection
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
   # Manage JIT config Secrets for runners and webhook secret persistence
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["create", "get", "update", "delete"]
+    verbs: ["create", "get", "list", "update", "delete", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
