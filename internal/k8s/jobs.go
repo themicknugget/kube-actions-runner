@@ -512,8 +512,9 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 							},
 						},
 					},
-					// RUNNER_NAME is required by the ARC dind-rootless image startup script
+					// ARC dind-rootless image requires these env vars even with JIT config
 					{Name: "RUNNER_NAME", Value: config.Name},
+					{Name: "RUNNER_REPO", Value: config.Owner + "/" + config.Repo},
 					{Name: "DOCKER_HOST", Value: "unix:///run/user/1000/docker.sock"},
 					{Name: "XDG_RUNTIME_DIR", Value: "/run/user/1000"},
 				},
