@@ -511,6 +511,9 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 				Name:          "dind",
 				Image:         dindImage,
 				RestartPolicy: ptr(corev1.ContainerRestartPolicyAlways),
+				Command:       []string{"/bin/sh", "-c"},
+				// Start dockerd, wait for socket, chmod 666 so non-root runner can access it
+				Args: []string{"dockerd-entrypoint.sh dockerd & while [ ! -S /var/run/docker.sock ]; do sleep 1; done; chmod 666 /var/run/docker.sock; wait"},
 				Env: []corev1.EnvVar{
 					{Name: "DOCKER_TLS_CERTDIR", Value: ""}, // Disable TLS for local socket
 				},
@@ -543,7 +546,6 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 					},
 					{Name: "DOCKER_HOST", Value: "unix:///var/run/docker.sock"},
 				},
-				// Runner runs as non-root, user namespace provides isolation
 				VolumeMounts: append(commonVolumeMounts(),
 					corev1.VolumeMount{Name: "docker-socket", MountPath: "/var/run"},
 				),
