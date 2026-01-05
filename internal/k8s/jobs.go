@@ -479,12 +479,45 @@ func (c *Client) buildUserNSPodSpec(config RunnerJobConfig, secretName string) c
 
 // DinD-Rootless mode: hostUsers=false + privileged confines privileges to user namespace
 // Both "dind" and "dind-rootless" modes use this implementation for security
-// Note: This mode uses the ARC dind-rootless image which requires RUNNER_NAME even with JIT config
+// We use a custom command to start rootless Docker and run the runner with JIT config,
+// bypassing the ARC startup.sh which doesn't support JIT config.
 func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName string) corev1.PodSpec {
 	image := config.RunnerImage
 	if image == "" {
 		image = DefaultDinDRootlessImage
 	}
+
+	// Custom startup script that:
+	// 1. Starts rootless Docker daemon in background
+	// 2. Waits for Docker to be ready
+	// 3. Runs the GitHub runner with JIT config
+	startupScript := `#!/bin/bash
+set -e
+
+# Start rootless Docker daemon
+echo "Starting rootless Docker..."
+/home/runner/bin/dockerd-rootless.sh --config-file /home/runner/.config/docker/daemon.json &
+DOCKER_PID=$!
+
+# Wait for Docker to be ready (max 60 seconds)
+echo "Waiting for Docker to be ready..."
+for i in $(seq 1 60); do
+    if docker info >/dev/null 2>&1; then
+        echo "Docker is ready"
+        break
+    fi
+    if [ $i -eq 60 ]; then
+        echo "Docker failed to start"
+        exit 1
+    fi
+    sleep 1
+done
+
+# Run the GitHub Actions runner with JIT config
+echo "Starting GitHub Actions runner..."
+cd /home/runner
+./run.sh --jitconfig "$RUNNER_JITCONFIG"
+`
 
 	return corev1.PodSpec{
 		RestartPolicy:             corev1.RestartPolicyNever,
@@ -498,8 +531,10 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 		},
 		Containers: []corev1.Container{
 			{
-				Name:  "runner",
-				Image: image,
+				Name:    "runner",
+				Image:   image,
+				Command: []string{"/bin/bash", "-c"},
+				Args:    []string{startupScript},
 				Env: []corev1.EnvVar{
 					{
 						Name: "RUNNER_JITCONFIG",
@@ -512,9 +547,6 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 							},
 						},
 					},
-					// ARC dind-rootless image requires these env vars even with JIT config
-					{Name: "RUNNER_NAME", Value: config.Name},
-					{Name: "RUNNER_REPO", Value: config.Owner + "/" + config.Repo},
 					{Name: "DOCKER_HOST", Value: "unix:///run/user/1000/docker.sock"},
 					{Name: "XDG_RUNTIME_DIR", Value: "/run/user/1000"},
 				},
