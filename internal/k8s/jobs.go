@@ -496,7 +496,7 @@ set -e
 
 # Start rootless Docker daemon
 echo "Starting rootless Docker..."
-/home/runner/bin/dockerd-rootless.sh --config-file /home/runner/.config/docker/daemon.json &
+/home/runner/bin/dockerd-rootless.sh &
 DOCKER_PID=$!
 
 # Wait for Docker to be ready (max 60 seconds)
