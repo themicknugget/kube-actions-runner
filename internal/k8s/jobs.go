@@ -42,12 +42,13 @@ var validRunnerModes = map[RunnerMode]bool{
 	RunnerModeDinDRootless: true,
 }
 
-// Both dind and dind-rootless use the rootless image for security
+// Default runner images for each mode
+// DinD modes use the standard runner with a separate dind sidecar
 var defaultRunnerImages = map[RunnerMode]string{
 	RunnerModeStandard:     DefaultRunnerImage,
 	RunnerModeUserNS:       DefaultRunnerImage,
-	RunnerModeDinD:         DefaultDinDRootlessImage,
-	RunnerModeDinDRootless: DefaultDinDRootlessImage,
+	RunnerModeDinD:         DefaultRunnerImage,
+	RunnerModeDinDRootless: DefaultRunnerImage,
 }
 
 // archLabelMap maps workflow labels to kubernetes.io/arch values
