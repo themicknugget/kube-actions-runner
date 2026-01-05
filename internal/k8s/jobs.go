@@ -478,10 +478,10 @@ func (c *Client) buildUserNSPodSpec(config RunnerJobConfig, secretName string) c
 	}
 }
 
-// DinD mode: privileged sidecar with user namespace isolation
+// DinD mode: privileged sidecar - requires real privileged access for dockerd
 // Uses Kubernetes 1.28+ native sidecar containers (init container with restartPolicy: Always)
 // The dind sidecar automatically terminates when the main runner container exits
-// hostUsers=false confines privileged containers to user namespace for security
+// NOTE: Cannot use user namespaces here - dockerd needs real privileged access
 func (c *Client) buildDinDPodSpec(config RunnerJobConfig, secretName string) corev1.PodSpec {
 	image := config.RunnerImage
 	if image == "" {
@@ -497,7 +497,7 @@ func (c *Client) buildDinDPodSpec(config RunnerJobConfig, secretName string) cor
 		RestartPolicy:             corev1.RestartPolicyNever,
 		NodeSelector:              buildNodeSelector(config.Labels),
 		TopologySpreadConstraints: buildTopologySpreadConstraints(),
-		HostUsers:                 ptr(false), // User namespace isolation
+		// No hostUsers: false - dind needs real privileged access for dockerd
 		SecurityContext: &corev1.PodSecurityContext{
 			SeccompProfile: &corev1.SeccompProfile{
 				Type: corev1.SeccompProfileTypeRuntimeDefault,

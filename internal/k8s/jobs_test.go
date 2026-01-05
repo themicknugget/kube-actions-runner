@@ -163,9 +163,9 @@ func TestBuildPodSpec_DinDMode(t *testing.T) {
 		t.Error("runner should have DOCKER_HOST env var pointing to dind sidecar")
 	}
 
-	// DinD mode now uses user namespace isolation for security
-	if podSpec.HostUsers == nil || *podSpec.HostUsers {
-		t.Error("dind mode should use user namespace isolation (hostUsers=false)")
+	// DinD mode cannot use user namespaces - dockerd needs real privileged access
+	if podSpec.HostUsers != nil && !*podSpec.HostUsers {
+		t.Error("dind mode should not use user namespace isolation (dockerd needs real privileges)")
 	}
 }
 
@@ -359,7 +359,7 @@ func TestBuildPodSpec_HostUsersSettings(t *testing.T) {
 	}{
 		{RunnerModeStandard, nil, nil, "standard mode should not set hostUsers"},
 		{RunnerModeUserNS, nil, ptr(false), "userns mode should set hostUsers=false"},
-		{RunnerModeDinD, []string{"docker"}, ptr(false), "dind mode should set hostUsers=false"},
+		{RunnerModeDinD, []string{"docker"}, nil, "dind mode needs real privileged access, no user namespaces"},
 		{RunnerModeDinDRootless, []string{"docker"}, ptr(false), "dind-rootless mode should set hostUsers=false"},
 	}
 
