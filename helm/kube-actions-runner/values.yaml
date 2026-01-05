@@ -38,11 +38,15 @@ config:
   # -- GitHub runner group ID (optional, for organization runners)
   runnerGroupId: ""
 
-  # -- Runner container image
-  runnerImage: "ghcr.io/actions/actions-runner:2.321.0"
+  # -- Runner container image (optional)
+  # Leave empty to use the default image based on runnerMode:
+  #   - standard/userns: ghcr.io/actions/actions-runner:2.330.0
+  #   - dind/dind-rootless: ghcr.io/actions-runner-controller/actions-runner-controller/actions-runner-dind-rootless:ubuntu-22.04
+  runnerImage: ""
 
-  # -- Docker-in-Docker sidecar image (if DinD is needed)
-  dindImage: "docker:27-dind"
+  # -- Docker-in-Docker sidecar image (DEPRECATED - dind mode now uses rootless Docker)
+  # This setting is ignored as dind is now an alias for dind-rootless
+  dindImage: ""
 
   # -- Listen address for the webhook server
   listenAddr: ":8080"
