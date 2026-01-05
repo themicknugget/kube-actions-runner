@@ -477,70 +477,55 @@ func (c *Client) buildUserNSPodSpec(config RunnerJobConfig, secretName string) c
 	}
 }
 
-// DinD-Rootless mode: hostUsers=false + privileged confines privileges to user namespace
-// Both "dind" and "dind-rootless" modes use this implementation for security
-// We use a custom command to start rootless Docker and run the runner with JIT config,
-// bypassing the ARC startup.sh which doesn't support JIT config.
+// DinD mode with user namespace isolation:
+// - DinD sidecar runs as root (privileged) to provide Docker
+// - Runner runs as non-root user with hostUsers=false for user namespace isolation
+// - They communicate via a shared Docker socket
 func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName string) corev1.PodSpec {
-	image := config.RunnerImage
-	if image == "" {
-		image = DefaultDinDRootlessImage
+	runnerImage := config.RunnerImage
+	if runnerImage == "" {
+		runnerImage = DefaultRunnerImage
 	}
 
-	// Custom startup script that:
-	// 1. Starts rootless Docker daemon in background
-	// 2. Waits for Docker to be ready
-	// 3. Runs the GitHub runner with JIT config
-	startupScript := `#!/bin/bash
-set -e
-
-# Start rootless Docker daemon
-echo "Starting rootless Docker..."
-/home/runner/bin/dockerd-rootless.sh &
-DOCKER_PID=$!
-
-# Wait for Docker to be ready (max 60 seconds)
-echo "Waiting for Docker to be ready..."
-for i in $(seq 1 60); do
-    if docker info >/dev/null 2>&1; then
-        echo "Docker is ready"
-        break
-    fi
-    if [ $i -eq 60 ]; then
-        echo "Docker failed to start"
-        exit 1
-    fi
-    sleep 1
-done
-
-# Run the GitHub Actions runner with JIT config
-echo "Starting GitHub Actions runner..."
-cd /home/runner
-./run.sh --jitconfig "$RUNNER_JITCONFIG"
-`
+	dindImage := config.DindImage
+	if dindImage == "" {
+		dindImage = "docker:dind"
+	}
 
 	return corev1.PodSpec{
 		RestartPolicy:             corev1.RestartPolicyNever,
 		NodeSelector:              buildNodeSelector(config.Labels),
 		TopologySpreadConstraints: buildTopologySpreadConstraints(),
-		// Note: We don't use hostUsers=false here because rootless Docker
-		// needs to create its own user namespace, and nested user namespaces
-		// are not supported. Rootless Docker provides its own isolation.
-		// We run as root in the container but rootless Docker still provides
-		// isolation via its internal user namespace mapping.
+		HostUsers:                 ptr(false), // User namespace isolation for the runner
 		SecurityContext: &corev1.PodSecurityContext{
-			RunAsUser:  ptr(int64(0)),
-			RunAsGroup: ptr(int64(0)),
 			SeccompProfile: &corev1.SeccompProfile{
-				Type: corev1.SeccompProfileTypeUnconfined,
+				Type: corev1.SeccompProfileTypeRuntimeDefault,
+			},
+		},
+		// DinD runs as a native sidecar (init container with restartPolicy=Always)
+		InitContainers: []corev1.Container{
+			{
+				Name:          "dind",
+				Image:         dindImage,
+				RestartPolicy: ptr(corev1.ContainerRestartPolicyAlways),
+				Env: []corev1.EnvVar{
+					{Name: "DOCKER_TLS_CERTDIR", Value: ""}, // Disable TLS for local socket
+				},
+				SecurityContext: &corev1.SecurityContext{
+					Privileged: ptr(true),
+				},
+				VolumeMounts: []corev1.VolumeMount{
+					{Name: "docker-socket", MountPath: "/var/run"},
+					{Name: "docker-data", MountPath: "/var/lib/docker"},
+				},
 			},
 		},
 		Containers: []corev1.Container{
 			{
 				Name:    "runner",
-				Image:   image,
-				Command: []string{"/bin/bash", "-c"},
-				Args:    []string{startupScript},
+				Image:   runnerImage,
+				Command: []string{"/bin/sh", "-c"},
+				Args:    []string{"./run.sh --jitconfig \"$RUNNER_JITCONFIG\""},
 				Env: []corev1.EnvVar{
 					{
 						Name: "RUNNER_JITCONFIG",
@@ -553,20 +538,16 @@ cd /home/runner
 							},
 						},
 					},
-					{Name: "DOCKER_HOST", Value: "unix:///run/user/1000/docker.sock"},
-					{Name: "XDG_RUNTIME_DIR", Value: "/run/user/1000"},
+					{Name: "DOCKER_HOST", Value: "unix:///var/run/docker.sock"},
 				},
-				SecurityContext: &corev1.SecurityContext{
-					Privileged: ptr(true),
-				},
+				// Runner runs as non-root, user namespace provides isolation
 				VolumeMounts: append(commonVolumeMounts(),
-					corev1.VolumeMount{Name: "run-user", MountPath: "/run/user/1000"},
-					corev1.VolumeMount{Name: "docker-data", MountPath: "/home/runner/.local/share/docker"},
+					corev1.VolumeMount{Name: "docker-socket", MountPath: "/var/run"},
 				),
 			},
 		},
 		Volumes: append(commonVolumes(),
-			corev1.Volume{Name: "run-user", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+			corev1.Volume{Name: "docker-socket", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 			corev1.Volume{Name: "docker-data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		),
 	}
