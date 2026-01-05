@@ -114,9 +114,9 @@ func TestBuildPodSpec_DinDMode(t *testing.T) {
 
 	podSpec := client.buildPodSpec(config, "secret-name")
 
-	// dind mode uses hostUsers=false for runner isolation
-	if podSpec.HostUsers == nil || *podSpec.HostUsers {
-		t.Error("dind mode should use user namespace isolation (hostUsers=false)")
+	// dind mode can't use hostUsers=false because dind needs cgroup access
+	if podSpec.HostUsers != nil && !*podSpec.HostUsers {
+		t.Error("dind mode should not set hostUsers=false (dind needs cgroup access)")
 	}
 
 	// Should have dind as init container (native sidecar)
@@ -202,9 +202,9 @@ func TestBuildPodSpec_DinDRootlessMode(t *testing.T) {
 
 	podSpec := client.buildPodSpec(config, "secret-name")
 
-	// dind-rootless uses hostUsers=false for runner isolation
-	if podSpec.HostUsers == nil || *podSpec.HostUsers {
-		t.Error("dind-rootless should set hostUsers=false for runner isolation")
+	// dind-rootless can't use hostUsers=false because dind needs cgroup access
+	if podSpec.HostUsers != nil && !*podSpec.HostUsers {
+		t.Error("dind-rootless should not set hostUsers=false (dind needs cgroup access)")
 	}
 
 	// Should have dind as init container (native sidecar)
@@ -359,8 +359,9 @@ func TestBuildPodSpec_HostUsersSettings(t *testing.T) {
 	}{
 		{RunnerModeStandard, nil, nil, "standard mode should not set hostUsers"},
 		{RunnerModeUserNS, nil, ptr(false), "userns mode should set hostUsers=false"},
-		{RunnerModeDinD, []string{"docker"}, ptr(false), "dind mode should set hostUsers=false for runner isolation"},
-		{RunnerModeDinDRootless, []string{"docker"}, ptr(false), "dind-rootless mode should set hostUsers=false for runner isolation"},
+		// DinD modes can't use hostUsers=false because privileged dind needs cgroup access
+		{RunnerModeDinD, []string{"docker"}, nil, "dind mode should not set hostUsers (dind needs cgroup access)"},
+		{RunnerModeDinDRootless, []string{"docker"}, nil, "dind-rootless mode should not set hostUsers (dind needs cgroup access)"},
 	}
 
 	for _, tt := range tests {

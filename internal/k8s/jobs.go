@@ -497,10 +497,12 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 		RestartPolicy:             corev1.RestartPolicyNever,
 		NodeSelector:              buildNodeSelector(config.Labels),
 		TopologySpreadConstraints: buildTopologySpreadConstraints(),
-		HostUsers:                 ptr(false), // User namespace isolation for the runner
+		// Note: DinD requires privileged access to cgroups, which is incompatible with
+		// user namespace isolation (hostUsers=false). The dind sidecar is privileged,
+		// so user namespaces don't add significant security benefit in this mode.
 		SecurityContext: &corev1.PodSecurityContext{
 			SeccompProfile: &corev1.SeccompProfile{
-				Type: corev1.SeccompProfileTypeRuntimeDefault,
+				Type: corev1.SeccompProfileTypeUnconfined,
 			},
 		},
 		// DinD runs as a native sidecar (init container with restartPolicy=Always)
