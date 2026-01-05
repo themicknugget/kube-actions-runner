@@ -523,7 +523,9 @@ cd /home/runner
 		RestartPolicy:             corev1.RestartPolicyNever,
 		NodeSelector:              buildNodeSelector(config.Labels),
 		TopologySpreadConstraints: buildTopologySpreadConstraints(),
-		HostUsers:                 ptr(false),
+		// Note: We don't use hostUsers=false here because rootless Docker
+		// needs to create its own user namespace, and nested user namespaces
+		// are not supported. Rootless Docker provides its own isolation.
 		SecurityContext: &corev1.PodSecurityContext{
 			SeccompProfile: &corev1.SeccompProfile{
 				Type: corev1.SeccompProfileTypeUnconfined,

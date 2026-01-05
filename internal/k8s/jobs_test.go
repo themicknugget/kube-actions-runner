@@ -128,12 +128,13 @@ func TestBuildPodSpec_DinDMode(t *testing.T) {
 		t.Errorf("expected container name 'runner', got %q", container.Name)
 	}
 
-	// dind mode (alias for dind-rootless) should use user namespaces
-	if podSpec.HostUsers == nil || *podSpec.HostUsers {
-		t.Error("dind mode should use user namespace isolation (hostUsers=false)")
+	// dind mode should NOT set hostUsers=false because rootless Docker needs to create
+	// its own user namespace, and nested user namespaces are not supported
+	if podSpec.HostUsers != nil && !*podSpec.HostUsers {
+		t.Error("dind mode should not set hostUsers=false (rootless Docker manages its own user namespace)")
 	}
 
-	// Container should be privileged within the user namespace
+	// Container should be privileged to allow rootless Docker to work
 	if container.SecurityContext == nil {
 		t.Fatal("expected container security context")
 	}
@@ -194,8 +195,10 @@ func TestBuildPodSpec_DinDRootlessMode(t *testing.T) {
 
 	podSpec := client.buildPodSpec(config, "secret-name")
 
-	if podSpec.HostUsers == nil || *podSpec.HostUsers {
-		t.Error("expected HostUsers to be false for dind-rootless mode")
+	// dind-rootless should NOT set hostUsers=false because rootless Docker needs to create
+	// its own user namespace, and nested user namespaces are not supported
+	if podSpec.HostUsers != nil && !*podSpec.HostUsers {
+		t.Error("dind-rootless should not set hostUsers=false (rootless Docker manages its own user namespace)")
 	}
 
 	if len(podSpec.Containers) != 1 {
@@ -208,7 +211,7 @@ func TestBuildPodSpec_DinDRootlessMode(t *testing.T) {
 		t.Fatal("expected container security context")
 	}
 	if container.SecurityContext.Privileged == nil || !*container.SecurityContext.Privileged {
-		t.Error("dind-rootless container should be privileged (within user namespace)")
+		t.Error("dind-rootless container should be privileged (to allow rootless Docker to work)")
 	}
 
 	hasDockerHost := false
@@ -343,8 +346,10 @@ func TestBuildPodSpec_HostUsersSettings(t *testing.T) {
 	}{
 		{RunnerModeStandard, nil, nil, "standard mode should not set hostUsers"},
 		{RunnerModeUserNS, nil, ptr(false), "userns mode should set hostUsers=false"},
-		{RunnerModeDinD, []string{"docker"}, ptr(false), "dind mode (alias for dind-rootless) should set hostUsers=false"},
-		{RunnerModeDinDRootless, []string{"docker"}, ptr(false), "dind-rootless mode should set hostUsers=false"},
+		// dind modes don't use hostUsers=false because rootless Docker needs to create its own
+		// user namespace, and nested user namespaces are not supported
+		{RunnerModeDinD, []string{"docker"}, nil, "dind mode should not set hostUsers (rootless Docker manages its own user namespace)"},
+		{RunnerModeDinDRootless, []string{"docker"}, nil, "dind-rootless mode should not set hostUsers (rootless Docker manages its own user namespace)"},
 	}
 
 	for _, tt := range tests {
