@@ -429,7 +429,9 @@ func (c *Client) buildStandardPodSpec(config RunnerJobConfig, secretName string)
 	}
 }
 
-// UserNS mode: hostUsers=false maps container root to unprivileged host user
+// UserNS mode: hostUsers=false provides user namespace isolation
+// Runs as user 1000 (non-root) but allows privilege escalation for sudo
+// User namespaces ensure even root in container is unprivileged on host
 func (c *Client) buildUserNSPodSpec(config RunnerJobConfig, secretName string) corev1.PodSpec {
 	image := config.RunnerImage
 	if image == "" {
@@ -442,7 +444,8 @@ func (c *Client) buildUserNSPodSpec(config RunnerJobConfig, secretName string) c
 		TopologySpreadConstraints: buildTopologySpreadConstraints(),
 		HostUsers:                 ptr(false),
 		SecurityContext: &corev1.PodSecurityContext{
-			RunAsUser: ptr(int64(0)),
+			RunAsNonRoot: ptr(true),
+			RunAsUser:    ptr(int64(1000)),
 			SeccompProfile: &corev1.SeccompProfile{
 				Type: corev1.SeccompProfileTypeRuntimeDefault,
 			},
@@ -466,6 +469,8 @@ func (c *Client) buildUserNSPodSpec(config RunnerJobConfig, secretName string) c
 						},
 					},
 				},
+				// No AllowPrivilegeEscalation: false - allow sudo to work
+				// User namespaces provide the real security boundary
 				VolumeMounts: commonVolumeMounts(),
 			},
 		},

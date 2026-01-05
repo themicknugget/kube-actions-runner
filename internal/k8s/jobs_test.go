@@ -90,8 +90,8 @@ func TestBuildPodSpec_UserNSMode(t *testing.T) {
 	if podSpec.SecurityContext == nil {
 		t.Fatal("expected pod security context")
 	}
-	if podSpec.SecurityContext.RunAsUser == nil || *podSpec.SecurityContext.RunAsUser != 0 {
-		t.Error("expected RunAsUser to be 0 for userns mode")
+	if podSpec.SecurityContext.RunAsUser == nil || *podSpec.SecurityContext.RunAsUser != 1000 {
+		t.Error("expected RunAsUser to be 1000 for userns mode")
 	}
 
 	if len(podSpec.Containers) != 1 {
@@ -259,9 +259,9 @@ func TestBuildPodSpec_DefaultsToUserNS(t *testing.T) {
 	if podSpec.SecurityContext == nil {
 		t.Fatal("expected pod security context")
 	}
-	// userns mode runs as root inside container (mapped to unprivileged on host)
-	if podSpec.SecurityContext.RunAsUser == nil || *podSpec.SecurityContext.RunAsUser != 0 {
-		t.Error("expected RunAsUser to be 0 (userns mode default)")
+	// userns mode runs as user 1000 (non-root) but allows sudo via privilege escalation
+	if podSpec.SecurityContext.RunAsUser == nil || *podSpec.SecurityContext.RunAsUser != 1000 {
+		t.Error("expected RunAsUser to be 1000 (userns mode default)")
 	}
 	if len(podSpec.Containers) != 1 {
 		t.Error("expected single container for default mode")
