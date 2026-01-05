@@ -527,6 +527,8 @@ cd /home/runner
 		// needs to create its own user namespace, and nested user namespaces
 		// are not supported. Rootless Docker provides its own isolation.
 		SecurityContext: &corev1.PodSecurityContext{
+			// FSGroup 1001 ensures volumes are writable by the runner user (uid 1001)
+			FSGroup: ptr(int64(1001)),
 			SeccompProfile: &corev1.SeccompProfile{
 				Type: corev1.SeccompProfileTypeUnconfined,
 			},
