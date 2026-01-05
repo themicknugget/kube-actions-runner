@@ -41,6 +41,9 @@ type Reconciler struct {
 	// activityCh is used to notify the reconciler loop when activity is recorded
 	// This allows immediate transition to active mode without waiting for the ticker
 	activityCh chan struct{}
+
+	// reconcileNowCh triggers an immediate reconcile cycle
+	reconcileNowCh chan struct{}
 }
 
 // ReconcilerConfig holds configuration for the Reconciler
@@ -87,13 +90,31 @@ func NewReconciler(cfg ReconcilerConfig) *Reconciler {
 		labelMatchers:    cfg.LabelMatchers,
 		reposToCheck:     cfg.ReposToCheck,
 		activityCh:       make(chan struct{}, 1), // Buffered to avoid blocking
+		reconcileNowCh:   make(chan struct{}, 1), // Buffered to avoid blocking
 	}
 }
 
 // SetReposToCheck updates the list of repos to check (called after discovery)
 func (r *Reconciler) SetReposToCheck(repos []string) {
+	wasEmpty := len(r.reposToCheck) == 0
 	r.reposToCheck = repos
 	r.logger.Info("reconciler repos updated", "count", len(repos))
+
+	// If repos were just populated for the first time, trigger immediate reconcile
+	// This ensures any jobs queued while the controller was starting get picked up
+	if wasEmpty && len(repos) > 0 {
+		r.TriggerReconcile()
+	}
+}
+
+// TriggerReconcile triggers an immediate reconcile cycle
+func (r *Reconciler) TriggerReconcile() {
+	r.logger.Info("triggering immediate reconcile")
+	// Non-blocking send - if channel is full, reconcile is already pending
+	select {
+	case r.reconcileNowCh <- struct{}{}:
+	default:
+	}
 }
 
 // Start begins the reconciliation loop with adaptive intervals
@@ -118,6 +139,16 @@ func (r *Reconciler) Start(ctx context.Context) {
 		case <-ctx.Done():
 			log.Info("reconciler stopped")
 			return
+		case <-r.reconcileNowCh:
+			// Immediate reconcile requested (e.g., after discovery completes)
+			r.reconcile(ctx)
+
+			// Switch to active interval since something triggered us
+			newInterval := r.calculateInterval()
+			if newInterval != currentInterval {
+				currentInterval = newInterval
+				ticker.Reset(currentInterval)
+			}
 		case <-r.activityCh:
 			// Activity was recorded - switch to active interval
 			// Don't run immediate reconcile - webhooks handle their own jobs
