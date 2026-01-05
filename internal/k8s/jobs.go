@@ -513,8 +513,8 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 				RestartPolicy: ptr(corev1.ContainerRestartPolicyAlways),
 				Command:       []string{"/bin/sh", "-c"},
 				// Start dockerd, wait for socket, chmod 666 so non-root runner can access it
-				// Trap SIGTERM to exit cleanly when pod terminates (avoids exit code 137)
-				Args: []string{"trap 'exit 0' TERM; dockerd-entrypoint.sh dockerd & while [ ! -S /var/run/docker.sock ]; do sleep 1; done; chmod 666 /var/run/docker.sock; wait"},
+				// Use a sleep loop instead of wait so SIGTERM can interrupt and exit cleanly
+				Args: []string{"trap 'exit 0' TERM; dockerd-entrypoint.sh dockerd & PID=$!; while [ ! -S /var/run/docker.sock ]; do sleep 1; done; chmod 666 /var/run/docker.sock; while kill -0 $PID 2>/dev/null; do sleep 1; done"},
 				Env: []corev1.EnvVar{
 					{Name: "DOCKER_TLS_CERTDIR", Value: ""}, // Disable TLS for local socket
 				},
