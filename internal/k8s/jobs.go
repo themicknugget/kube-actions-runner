@@ -26,14 +26,13 @@ type RunnerMode string
 const (
 	RunnerModeStandard     RunnerMode = "standard"      // Non-root, no Docker, no sudo (legacy)
 	RunnerModeUserNS       RunnerMode = "userns"        // User namespace isolation, sudo allowed (default)
-	RunnerModeDinD         RunnerMode = "dind"          // DinD sidecar with user namespace isolation
-	RunnerModeDinDRootless RunnerMode = "dind-rootless" // Rootless DinD with user namespace isolation
+	RunnerModeDinD         RunnerMode = "dind"          // Alias for dind-rootless (rootless Docker with user namespaces)
+	RunnerModeDinDRootless RunnerMode = "dind-rootless" // Rootless Docker with user namespace isolation
 )
 
 const (
 	DefaultRunnerImage       = "ghcr.io/actions/actions-runner:2.330.0"
 	DefaultDinDRootlessImage = "ghcr.io/actions-runner-controller/actions-runner-controller/actions-runner-dind-rootless:ubuntu-22.04"
-	DefaultDinDSidecarImage  = "docker:27-dind"
 )
 
 var validRunnerModes = map[RunnerMode]bool{
@@ -43,10 +42,11 @@ var validRunnerModes = map[RunnerMode]bool{
 	RunnerModeDinDRootless: true,
 }
 
+// Both dind and dind-rootless use the rootless image for security
 var defaultRunnerImages = map[RunnerMode]string{
 	RunnerModeStandard:     DefaultRunnerImage,
 	RunnerModeUserNS:       DefaultRunnerImage,
-	RunnerModeDinD:         DefaultRunnerImage,
+	RunnerModeDinD:         DefaultDinDRootlessImage,
 	RunnerModeDinDRootless: DefaultDinDRootlessImage,
 }
 
@@ -370,9 +370,8 @@ func (c *Client) buildPodSpec(config RunnerJobConfig, secretName string) corev1.
 	switch mode {
 	case RunnerModeUserNS:
 		return c.buildUserNSPodSpec(config, secretName)
-	case RunnerModeDinD:
-		return c.buildDinDPodSpec(config, secretName)
-	case RunnerModeDinDRootless:
+	case RunnerModeDinD, RunnerModeDinDRootless:
+		// Both dind and dind-rootless use rootless Docker with user namespaces
 		return c.buildDinDRootlessPodSpec(config, secretName)
 	default:
 		return c.buildStandardPodSpec(config, secretName)
@@ -478,117 +477,8 @@ func (c *Client) buildUserNSPodSpec(config RunnerJobConfig, secretName string) c
 	}
 }
 
-// DinD mode: privileged sidecar - requires real privileged access for dockerd
-// Uses Kubernetes 1.28+ native sidecar containers (init container with restartPolicy: Always)
-// The dind sidecar automatically terminates when the main runner container exits
-// NOTE: Cannot use user namespaces here - dockerd needs real privileged access
-func (c *Client) buildDinDPodSpec(config RunnerJobConfig, secretName string) corev1.PodSpec {
-	image := config.RunnerImage
-	if image == "" {
-		image = DefaultRunnerImage
-	}
-
-	dindImage := config.DindImage
-	if dindImage == "" {
-		dindImage = DefaultDinDSidecarImage
-	}
-
-	return corev1.PodSpec{
-		RestartPolicy:             corev1.RestartPolicyNever,
-		NodeSelector:              buildNodeSelector(config.Labels),
-		TopologySpreadConstraints: buildTopologySpreadConstraints(),
-		// No hostUsers: false - dind needs real privileged access for dockerd
-		SecurityContext: &corev1.PodSecurityContext{
-			SeccompProfile: &corev1.SeccompProfile{
-				Type: corev1.SeccompProfileTypeRuntimeDefault,
-			},
-		},
-		// Native sidecar container (K8s 1.28+): init container with restartPolicy: Always
-		// - Starts before main containers and keeps running
-		// - Automatically terminates when all main containers exit
-		// - StartupProbe ensures docker is ready before runner starts
-		InitContainers: []corev1.Container{
-			{
-				Name:  "dind",
-				Image: dindImage,
-				// restartPolicy: Always makes this a native sidecar that:
-				// 1. Starts before main containers
-				// 2. Keeps running alongside main containers
-				// 3. Automatically terminates when main containers exit
-				RestartPolicy: ptr(corev1.ContainerRestartPolicyAlways),
-				SecurityContext: &corev1.SecurityContext{
-					Privileged: ptr(true),
-				},
-				Env: []corev1.EnvVar{
-					{Name: "DOCKER_TLS_CERTDIR", Value: "/certs"},
-				},
-				// StartupProbe ensures dockerd is ready and TLS certs are generated
-				// before the runner container starts
-				StartupProbe: &corev1.Probe{
-					ProbeHandler: corev1.ProbeHandler{
-						Exec: &corev1.ExecAction{
-							// Check that dockerd is responding and TLS client certs exist
-							Command: []string{
-								"sh", "-c",
-								"docker version && test -f /certs/client/ca.pem",
-							},
-						},
-					},
-					InitialDelaySeconds: 1,
-					PeriodSeconds:       2,
-					TimeoutSeconds:      5,
-					FailureThreshold:    30, // Allow up to 60 seconds for dockerd to start
-				},
-				VolumeMounts: []corev1.VolumeMount{
-					{
-						Name:      "docker-certs",
-						MountPath: "/certs/client",
-					},
-					{
-						Name:      "dind-storage",
-						MountPath: "/var/lib/docker",
-					},
-				},
-			},
-		},
-		Containers: []corev1.Container{
-			{
-				Name:    "runner",
-				Image:   image,
-				Command: []string{"/bin/sh", "-c"},
-				// No need for pkill workaround - native sidecar terminates automatically
-				Args: []string{"./run.sh --jitconfig \"$RUNNER_JITCONFIG\""},
-				Env: []corev1.EnvVar{
-					{
-						Name: "RUNNER_JITCONFIG",
-						ValueFrom: &corev1.EnvVarSource{
-							SecretKeyRef: &corev1.SecretKeySelector{
-								LocalObjectReference: corev1.LocalObjectReference{
-									Name: secretName,
-								},
-								Key: "jitconfig",
-							},
-						},
-					},
-					{Name: "DOCKER_HOST", Value: "tcp://localhost:2376"},
-					{Name: "DOCKER_TLS_VERIFY", Value: "1"},
-					{Name: "DOCKER_CERT_PATH", Value: "/certs/client"},
-				},
-				VolumeMounts: append(commonVolumeMounts(), corev1.VolumeMount{
-					Name:      "docker-certs",
-					MountPath: "/certs/client",
-					ReadOnly:  true,
-				}),
-			},
-		},
-		Volumes: append(commonVolumes(),
-			corev1.Volume{Name: "docker-certs", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-			corev1.Volume{Name: "dind-storage", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-		),
-	}
-}
-
-// DinD-Rootless mode: hostUsers=false + privileged confines privileges to user namespace (recommended)
+// DinD-Rootless mode: hostUsers=false + privileged confines privileges to user namespace
+// Both "dind" and "dind-rootless" modes use this implementation for security
 // Note: This mode uses the ARC dind-rootless image which DOES support RUNNER_JITCONFIG natively
 func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName string) corev1.PodSpec {
 	image := config.RunnerImage

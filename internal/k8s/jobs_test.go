@@ -114,76 +114,63 @@ func TestBuildPodSpec_DinDMode(t *testing.T) {
 
 	podSpec := client.buildPodSpec(config, "secret-name")
 
-	// Runner should be in Containers, dind should be in InitContainers (native sidecar)
+	// dind is now an alias for dind-rootless - uses single container with rootless Docker
 	if len(podSpec.Containers) != 1 {
-		t.Fatalf("expected 1 container (runner), got %d", len(podSpec.Containers))
+		t.Fatalf("expected 1 container, got %d", len(podSpec.Containers))
 	}
-	if len(podSpec.InitContainers) != 1 {
-		t.Fatalf("expected 1 init container (dind sidecar), got %d", len(podSpec.InitContainers))
-	}
-
-	runnerContainer := &podSpec.Containers[0]
-	dindContainer := &podSpec.InitContainers[0]
-
-	if runnerContainer.Name != "runner" {
-		t.Errorf("expected runner container name 'runner', got %q", runnerContainer.Name)
-	}
-	if dindContainer.Name != "dind" {
-		t.Errorf("expected dind container name 'dind', got %q", dindContainer.Name)
+	if len(podSpec.InitContainers) != 0 {
+		t.Fatalf("expected 0 init containers (dind now uses rootless), got %d", len(podSpec.InitContainers))
 	}
 
-	// Verify dind is a native sidecar (restartPolicy: Always)
-	if dindContainer.RestartPolicy == nil {
-		t.Fatal("expected dind container to have restartPolicy set")
-	}
-	if *dindContainer.RestartPolicy != corev1.ContainerRestartPolicyAlways {
-		t.Errorf("expected dind restartPolicy=Always, got %v", *dindContainer.RestartPolicy)
+	container := podSpec.Containers[0]
+
+	if container.Name != "runner" {
+		t.Errorf("expected container name 'runner', got %q", container.Name)
 	}
 
-	// Verify dind has startup probe
-	if dindContainer.StartupProbe == nil {
-		t.Fatal("expected dind container to have startupProbe")
+	// dind mode (alias for dind-rootless) should use user namespaces
+	if podSpec.HostUsers == nil || *podSpec.HostUsers {
+		t.Error("dind mode should use user namespace isolation (hostUsers=false)")
 	}
 
-	if dindContainer.SecurityContext == nil {
-		t.Fatal("expected dind security context")
+	// Container should be privileged within the user namespace
+	if container.SecurityContext == nil {
+		t.Fatal("expected container security context")
 	}
-	if dindContainer.SecurityContext.Privileged == nil || !*dindContainer.SecurityContext.Privileged {
-		t.Error("dind sidecar should be privileged")
+	if container.SecurityContext.Privileged == nil || !*container.SecurityContext.Privileged {
+		t.Error("dind container should be privileged (within user namespace)")
 	}
 
 	hasDockerHost := false
-	for _, env := range runnerContainer.Env {
-		if env.Name == "DOCKER_HOST" && env.Value == "tcp://localhost:2376" {
+	for _, env := range container.Env {
+		if env.Name == "DOCKER_HOST" && env.Value == "unix:///run/user/1000/docker.sock" {
 			hasDockerHost = true
 			break
 		}
 	}
 	if !hasDockerHost {
-		t.Error("runner should have DOCKER_HOST env var pointing to dind sidecar")
+		t.Error("dind should have DOCKER_HOST env var for rootless socket")
 	}
 
-	// DinD mode cannot use user namespaces - dockerd needs real privileged access
-	if podSpec.HostUsers != nil && !*podSpec.HostUsers {
-		t.Error("dind mode should not use user namespace isolation (dockerd needs real privileges)")
+	if container.Image != DefaultDinDRootlessImage {
+		t.Errorf("expected default rootless image %q, got %q", DefaultDinDRootlessImage, container.Image)
 	}
 }
 
 func TestBuildPodSpec_DinDModeCustomImages(t *testing.T) {
 	client := &Client{namespace: "test-ns"}
 	customRunner := "my-runner:v1"
-	customDind := "my-dind:v1"
 	config := RunnerJobConfig{
 		Name:        "runner-12345",
 		RunnerMode:  RunnerModeDinD,
 		RunnerImage: customRunner,
-		DindImage:   customDind,
-		Labels:      []string{"self-hosted", "docker"},
+		// DindImage is ignored since dind now uses rootless (no separate sidecar)
+		Labels: []string{"self-hosted", "docker"},
 	}
 
 	podSpec := client.buildPodSpec(config, "secret-name")
 
-	// Check runner container image
+	// Check runner container image - dind is now alias for dind-rootless (single container)
 	if len(podSpec.Containers) != 1 || podSpec.Containers[0].Name != "runner" {
 		t.Fatal("expected single runner container")
 	}
@@ -191,12 +178,9 @@ func TestBuildPodSpec_DinDModeCustomImages(t *testing.T) {
 		t.Errorf("expected runner image %q, got %q", customRunner, podSpec.Containers[0].Image)
 	}
 
-	// Check dind init container (native sidecar) image
-	if len(podSpec.InitContainers) != 1 || podSpec.InitContainers[0].Name != "dind" {
-		t.Fatal("expected single dind init container")
-	}
-	if podSpec.InitContainers[0].Image != customDind {
-		t.Errorf("expected dind image %q, got %q", customDind, podSpec.InitContainers[0].Image)
+	// No init containers with rootless implementation
+	if len(podSpec.InitContainers) != 0 {
+		t.Fatalf("expected no init containers, got %d", len(podSpec.InitContainers))
 	}
 }
 
@@ -359,7 +343,7 @@ func TestBuildPodSpec_HostUsersSettings(t *testing.T) {
 	}{
 		{RunnerModeStandard, nil, nil, "standard mode should not set hostUsers"},
 		{RunnerModeUserNS, nil, ptr(false), "userns mode should set hostUsers=false"},
-		{RunnerModeDinD, []string{"docker"}, nil, "dind mode needs real privileged access, no user namespaces"},
+		{RunnerModeDinD, []string{"docker"}, ptr(false), "dind mode (alias for dind-rootless) should set hostUsers=false"},
 		{RunnerModeDinDRootless, []string{"docker"}, ptr(false), "dind-rootless mode should set hostUsers=false"},
 	}
 
@@ -401,7 +385,7 @@ func TestBuildPodSpec_PrivilegedSettings(t *testing.T) {
 	}{
 		{RunnerModeStandard, nil, false, "runner", false, "standard runner should not be privileged"},
 		{RunnerModeUserNS, nil, false, "runner", false, "userns runner should not be privileged"},
-		{RunnerModeDinD, []string{"docker"}, true, "dind", true, "dind sidecar should be privileged"},
+		{RunnerModeDinD, []string{"docker"}, true, "runner", false, "dind (alias for dind-rootless) runner should be privileged"},
 		{RunnerModeDinDRootless, []string{"docker"}, true, "runner", false, "dind-rootless runner should be privileged"},
 	}
 

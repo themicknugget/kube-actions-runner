@@ -117,7 +117,9 @@ func Load() (*Config, error) {
 
 	cfg.DindImage = os.Getenv("DIND_IMAGE")
 	if cfg.DindImage == "" {
-		cfg.DindImage = k8s.DefaultDinDSidecarImage
+		// DindImage is deprecated - dind mode now uses rootless Docker (no separate sidecar)
+		// Keep for backwards compatibility, but the value is effectively ignored
+		cfg.DindImage = k8s.DefaultDinDRootlessImage
 	}
 
 	ttlSecondsStr := os.Getenv("JOB_TTL_SECONDS")
