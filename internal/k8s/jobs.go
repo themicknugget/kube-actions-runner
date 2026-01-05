@@ -24,10 +24,10 @@ import (
 type RunnerMode string
 
 const (
-	RunnerModeStandard     RunnerMode = "standard"      // Non-root, no Docker
-	RunnerModeUserNS       RunnerMode = "userns"        // User namespace isolation, no Docker
-	RunnerModeDinD         RunnerMode = "dind"          // Privileged DinD sidecar (use with caution)
-	RunnerModeDinDRootless RunnerMode = "dind-rootless" // Rootless DinD in user namespace (recommended for Docker)
+	RunnerModeStandard     RunnerMode = "standard"      // Non-root, no Docker, no sudo (legacy)
+	RunnerModeUserNS       RunnerMode = "userns"        // User namespace isolation, sudo allowed (default)
+	RunnerModeDinD         RunnerMode = "dind"          // DinD sidecar with user namespace isolation
+	RunnerModeDinDRootless RunnerMode = "dind-rootless" // Rootless DinD with user namespace isolation
 )
 
 const (
@@ -348,12 +348,13 @@ func hasDockerLabel(labels []string) bool {
 // taking into account the docker label requirement for dind modes
 func DetermineActualMode(configuredMode RunnerMode, labels []string) RunnerMode {
 	if configuredMode == "" {
-		return RunnerModeStandard
+		return RunnerModeUserNS
 	}
 
 	// Only use docker modes (dind/dind-rootless) if "docker" label is present
+	// Fall back to userns mode which provides user namespace isolation
 	if (configuredMode == RunnerModeDinD || configuredMode == RunnerModeDinDRootless) && !hasDockerLabel(labels) {
-		return RunnerModeStandard
+		return RunnerModeUserNS
 	}
 
 	return configuredMode
@@ -363,7 +364,7 @@ func (c *Client) buildPodSpec(config RunnerJobConfig, secretName string) corev1.
 	// Mode should already be determined by DetermineActualMode before calling this
 	mode := config.RunnerMode
 	if mode == "" {
-		mode = RunnerModeStandard
+		mode = RunnerModeUserNS
 	}
 
 	switch mode {
@@ -472,9 +473,10 @@ func (c *Client) buildUserNSPodSpec(config RunnerJobConfig, secretName string) c
 	}
 }
 
-// DinD mode: privileged sidecar - use with caution, has full host access
+// DinD mode: privileged sidecar with user namespace isolation
 // Uses Kubernetes 1.28+ native sidecar containers (init container with restartPolicy: Always)
 // The dind sidecar automatically terminates when the main runner container exits
+// hostUsers=false confines privileged containers to user namespace for security
 func (c *Client) buildDinDPodSpec(config RunnerJobConfig, secretName string) corev1.PodSpec {
 	image := config.RunnerImage
 	if image == "" {
@@ -490,6 +492,7 @@ func (c *Client) buildDinDPodSpec(config RunnerJobConfig, secretName string) cor
 		RestartPolicy:             corev1.RestartPolicyNever,
 		NodeSelector:              buildNodeSelector(config.Labels),
 		TopologySpreadConstraints: buildTopologySpreadConstraints(),
+		HostUsers:                 ptr(false), // User namespace isolation
 		SecurityContext: &corev1.PodSecurityContext{
 			SeccompProfile: &corev1.SeccompProfile{
 				Type: corev1.SeccompProfileTypeRuntimeDefault,

@@ -163,8 +163,9 @@ func TestBuildPodSpec_DinDMode(t *testing.T) {
 		t.Error("runner should have DOCKER_HOST env var pointing to dind sidecar")
 	}
 
-	if podSpec.HostUsers != nil && !*podSpec.HostUsers {
-		t.Error("dind mode should not use user namespace isolation")
+	// DinD mode now uses user namespace isolation for security
+	if podSpec.HostUsers == nil || *podSpec.HostUsers {
+		t.Error("dind mode should use user namespace isolation (hostUsers=false)")
 	}
 }
 
@@ -242,7 +243,7 @@ func TestBuildPodSpec_DinDRootlessMode(t *testing.T) {
 	}
 }
 
-func TestBuildPodSpec_DefaultsToStandard(t *testing.T) {
+func TestBuildPodSpec_DefaultsToUserNS(t *testing.T) {
 	client := &Client{namespace: "test-ns"}
 	config := RunnerJobConfig{
 		Name:       "runner-12345",
@@ -251,11 +252,16 @@ func TestBuildPodSpec_DefaultsToStandard(t *testing.T) {
 
 	podSpec := client.buildPodSpec(config, "secret-name")
 
+	// Default mode is now userns which uses user namespaces
+	if podSpec.HostUsers == nil || *podSpec.HostUsers {
+		t.Error("expected hostUsers=false for default userns mode")
+	}
 	if podSpec.SecurityContext == nil {
 		t.Fatal("expected pod security context")
 	}
-	if podSpec.SecurityContext.RunAsUser == nil || *podSpec.SecurityContext.RunAsUser != 1000 {
-		t.Error("expected RunAsUser to be 1000 (standard mode default)")
+	// userns mode runs as root inside container (mapped to unprivileged on host)
+	if podSpec.SecurityContext.RunAsUser == nil || *podSpec.SecurityContext.RunAsUser != 0 {
+		t.Error("expected RunAsUser to be 0 (userns mode default)")
 	}
 	if len(podSpec.Containers) != 1 {
 		t.Error("expected single container for default mode")
@@ -263,7 +269,7 @@ func TestBuildPodSpec_DefaultsToStandard(t *testing.T) {
 }
 
 func TestDetermineActualMode_DinDFallsBackWithoutDockerLabel(t *testing.T) {
-	// When dind mode is configured but no "docker" label, should fall back to standard
+	// When dind mode is configured but no "docker" label, should fall back to userns
 	tests := []struct {
 		mode   RunnerMode
 		labels []string
@@ -278,9 +284,9 @@ func TestDetermineActualMode_DinDFallsBackWithoutDockerLabel(t *testing.T) {
 		t.Run(string(tt.mode), func(t *testing.T) {
 			actualMode := DetermineActualMode(tt.mode, tt.labels)
 
-			// Should fall back to standard mode
-			if actualMode != RunnerModeStandard {
-				t.Errorf("expected mode to fall back to standard, got %s", actualMode)
+			// Should fall back to userns mode (user namespace isolation)
+			if actualMode != RunnerModeUserNS {
+				t.Errorf("expected mode to fall back to userns, got %s", actualMode)
 			}
 		})
 	}
@@ -353,7 +359,7 @@ func TestBuildPodSpec_HostUsersSettings(t *testing.T) {
 	}{
 		{RunnerModeStandard, nil, nil, "standard mode should not set hostUsers"},
 		{RunnerModeUserNS, nil, ptr(false), "userns mode should set hostUsers=false"},
-		{RunnerModeDinD, []string{"docker"}, nil, "dind mode should not set hostUsers"},
+		{RunnerModeDinD, []string{"docker"}, ptr(false), "dind mode should set hostUsers=false"},
 		{RunnerModeDinDRootless, []string{"docker"}, ptr(false), "dind-rootless mode should set hostUsers=false"},
 	}
 
