@@ -479,7 +479,7 @@ func (c *Client) buildUserNSPodSpec(config RunnerJobConfig, secretName string) c
 
 // DinD-Rootless mode: hostUsers=false + privileged confines privileges to user namespace
 // Both "dind" and "dind-rootless" modes use this implementation for security
-// Note: This mode uses the ARC dind-rootless image which DOES support RUNNER_JITCONFIG natively
+// Note: This mode uses the ARC dind-rootless image which requires RUNNER_NAME even with JIT config
 func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName string) corev1.PodSpec {
 	image := config.RunnerImage
 	if image == "" {
@@ -512,6 +512,8 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 							},
 						},
 					},
+					// RUNNER_NAME is required by the ARC dind-rootless image startup script
+					{Name: "RUNNER_NAME", Value: config.Name},
 					{Name: "DOCKER_HOST", Value: "unix:///run/user/1000/docker.sock"},
 					{Name: "XDG_RUNTIME_DIR", Value: "/run/user/1000"},
 				},
