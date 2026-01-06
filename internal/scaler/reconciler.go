@@ -519,7 +519,13 @@ func (r *Reconciler) createRunnerForJob(ctx context.Context, ghClient *ghclient.
 				return fmt.Errorf("failed to delete stale runner: %w", delErr)
 			}
 			if deleted {
-				log.Info("deleted stale runner, retrying JIT config generation")
+				log.Info("deleted stale runner from GitHub, cleaning up K8s job", "runner_name", runnerName)
+				// Also delete the K8s job so we can create a fresh one with new JIT config
+				if k8sDeleted, k8sErr := r.k8sClient.DeleteJob(ctx, runnerName); k8sErr != nil {
+					log.Warn("failed to delete K8s job for stale runner", "error", k8sErr.Error())
+				} else if k8sDeleted {
+					log.Info("deleted stale K8s job", "runner_name", runnerName)
+				}
 				// Retry JIT config generation
 				jitConfig, err = ghClient.GenerateJITConfig(ctx, job.Owner, job.Repo, runnerName, job.Labels)
 				if err != nil {

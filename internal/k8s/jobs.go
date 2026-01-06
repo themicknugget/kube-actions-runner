@@ -139,6 +139,23 @@ func (c *Client) JobExists(ctx context.Context, name string) (bool, error) {
 	return true, nil
 }
 
+// DeleteJob deletes a runner job by name.
+// Uses background propagation to also delete the associated pod.
+// Returns true if the job was deleted, false if it didn't exist.
+func (c *Client) DeleteJob(ctx context.Context, name string) (bool, error) {
+	propagation := metav1.DeletePropagationBackground
+	err := c.clientset.BatchV1().Jobs(c.namespace).Delete(ctx, name, metav1.DeleteOptions{
+		PropagationPolicy: &propagation,
+	})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to delete job: %w", err)
+	}
+	return true, nil
+}
+
 type RunnerJobConfig struct {
 	Name        string
 	JITConfig   string
