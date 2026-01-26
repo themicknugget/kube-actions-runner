@@ -160,6 +160,7 @@ func main() {
 		"label_matchers", cfg.LabelMatchers,
 		"runner_mode", cfg.RunnerMode,
 		"runner_image", cfg.RunnerImage,
+		"registry_mirror", cfg.RegistryMirror,
 		"job_ttl_seconds", cfg.TTLSeconds,
 		"runner_group_id", cfg.RunnerGroupID,
 		"webhook_auto_register", cfg.WebhookAutoRegister,
@@ -181,6 +182,7 @@ func main() {
 		RunnerMode:      cfg.RunnerMode,
 		RunnerImage:     cfg.RunnerImage,
 		DindImage:       cfg.DindImage,
+		RegistryMirror:  cfg.RegistryMirror,
 		TTLSeconds:      cfg.TTLSeconds,
 		SkipNodeCheck:   cfg.SkipNodeCheck,
 	})

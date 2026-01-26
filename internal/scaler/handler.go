@@ -16,18 +16,19 @@ import (
 )
 
 type Scaler struct {
-	webhookSecret   []byte
-	labelMatchers   []LabelMatcher
-	ghClientFactory *ghclient.ClientFactory
-	k8sClient       *k8s.Client
-	logger          *logger.Logger
-	runnerMode      k8s.RunnerMode
-	runnerImage     string
-	dindImage       string
-	ttlSeconds      int32
-	skipNodeCheck   bool
-	jobCreateMu     sync.Mutex // Serializes job creation for better topology spread
-	reconciler      *Reconciler // For recording activity to trigger faster polling
+	webhookSecret    []byte
+	labelMatchers    []LabelMatcher
+	ghClientFactory  *ghclient.ClientFactory
+	k8sClient        *k8s.Client
+	logger           *logger.Logger
+	runnerMode       k8s.RunnerMode
+	runnerImage      string
+	dindImage        string
+	registryMirror   string
+	ttlSeconds       int32
+	skipNodeCheck    bool
+	jobCreateMu      sync.Mutex // Serializes job creation for better topology spread
+	reconciler       *Reconciler // For recording activity to trigger faster polling
 }
 
 type Config struct {
@@ -39,6 +40,7 @@ type Config struct {
 	RunnerMode      k8s.RunnerMode
 	RunnerImage     string
 	DindImage       string
+	RegistryMirror  string
 	TTLSeconds      int32
 	SkipNodeCheck   bool
 }
@@ -53,6 +55,7 @@ func NewScaler(cfg Config) *Scaler {
 		runnerMode:      cfg.RunnerMode,
 		runnerImage:     cfg.RunnerImage,
 		dindImage:       cfg.DindImage,
+		registryMirror:  cfg.RegistryMirror,
 		ttlSeconds:      cfg.TTLSeconds,
 		skipNodeCheck:   cfg.SkipNodeCheck,
 	}
@@ -255,16 +258,17 @@ func (s *Scaler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 
 func (s *Scaler) createRunnerJob(ctx context.Context, name, jitConfig, owner, repo string, workflowID int64, labels []string) (k8s.RunnerMode, error) {
 	config := k8s.RunnerJobConfig{
-		Name:        name,
-		JITConfig:   jitConfig,
-		Owner:       owner,
-		Repo:        repo,
-		WorkflowID:  workflowID,
-		Labels:      labels,
-		RunnerMode:  s.runnerMode,
-		RunnerImage: s.runnerImage,
-		DindImage:   s.dindImage,
-		TTLSeconds:  s.ttlSeconds,
+		Name:           name,
+		JITConfig:      jitConfig,
+		Owner:          owner,
+		Repo:           repo,
+		WorkflowID:     workflowID,
+		Labels:         labels,
+		RunnerMode:     s.runnerMode,
+		RunnerImage:    s.runnerImage,
+		DindImage:      s.dindImage,
+		RegistryMirror: s.registryMirror,
+		TTLSeconds:     s.ttlSeconds,
 	}
 
 	// Serialize job creation to allow scheduler to see previous pods

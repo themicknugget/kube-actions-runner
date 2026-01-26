@@ -157,16 +157,17 @@ func (c *Client) DeleteJob(ctx context.Context, name string) (bool, error) {
 }
 
 type RunnerJobConfig struct {
-	Name        string
-	JITConfig   string
-	Owner       string
-	Repo        string
-	WorkflowID  int64
-	Labels      []string
-	RunnerMode  RunnerMode
-	RunnerImage string
-	DindImage   string
-	TTLSeconds  int32
+	Name           string
+	JITConfig      string
+	Owner          string
+	Repo           string
+	WorkflowID     int64
+	Labels         []string
+	RunnerMode     RunnerMode
+	RunnerImage    string
+	DindImage      string
+	RegistryMirror string
+	TTLSeconds     int32
 }
 
 func (c RunnerJobConfig) ttlSeconds() int32 {
@@ -510,7 +511,49 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 		dindImage = "docker:dind"
 	}
 
-	return corev1.PodSpec{
+	// Build volumes and volume mounts
+	volumes := append(commonVolumes(),
+		corev1.Volume{Name: "docker-socket", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		corev1.Volume{Name: "docker-data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+	)
+
+	dindVolumeMounts := []corev1.VolumeMount{
+		{Name: "docker-socket", MountPath: "/var/run"},
+		{Name: "docker-data", MountPath: "/var/lib/docker"},
+	}
+
+	// Build dockerd command with optional registry mirror configuration
+	dockerdArgs := []string{"trap 'exit 0' TERM; "}
+	dockerdConfigFile := ""
+
+	if config.RegistryMirror != "" {
+		// Create daemon.json with registry mirror configuration
+		daemonJSON := fmt.Sprintf(`{"registry-mirrors":["%s"]}`, config.RegistryMirror)
+		volumes = append(volumes, corev1.Volume{
+			Name: "docker-config",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		})
+		dindVolumeMounts = append(dindVolumeMounts, corev1.VolumeMount{
+			Name:      "docker-config",
+			MountPath: "/etc/docker",
+		})
+		dockerdConfigFile = fmt.Sprintf("echo '%s' > /etc/docker/daemon.json && ", daemonJSON)
+	}
+
+	// Build the dockerd command
+	// Start dockerd with optional config file, wait for socket, chmod 666 so non-root runner can access it
+	// Use a sleep loop instead of wait so SIGTERM can interrupt and exit cleanly
+	dockerdArgs = append(dockerdArgs,
+		dockerdConfigFile,
+		"daemon-entrypoint.sh dockerd & PID=$!; ",
+		"while [ ! -S /var/run/docker.sock ]; do sleep 1; done; ",
+		"chmod 666 /var/run/docker.sock; ",
+		"while kill -0 $PID 2>/dev/null; do sleep 1; done",
+	)
+
+	podSpec := corev1.PodSpec{
 		RestartPolicy:             corev1.RestartPolicyNever,
 		NodeSelector:              buildNodeSelector(config.Labels),
 		TopologySpreadConstraints: buildTopologySpreadConstraints(),
@@ -529,19 +572,14 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 				Image:         dindImage,
 				RestartPolicy: ptr(corev1.ContainerRestartPolicyAlways),
 				Command:       []string{"/bin/sh", "-c"},
-				// Start dockerd, wait for socket, chmod 666 so non-root runner can access it
-				// Use a sleep loop instead of wait so SIGTERM can interrupt and exit cleanly
-				Args: []string{"trap 'exit 0' TERM; dockerd-entrypoint.sh dockerd & PID=$!; while [ ! -S /var/run/docker.sock ]; do sleep 1; done; chmod 666 /var/run/docker.sock; while kill -0 $PID 2>/dev/null; do sleep 1; done"},
+				Args:          []string{string(dockerdArgs)},
 				Env: []corev1.EnvVar{
 					{Name: "DOCKER_TLS_CERTDIR", Value: ""}, // Disable TLS for local socket
 				},
 				SecurityContext: &corev1.SecurityContext{
 					Privileged: ptr(true),
 				},
-				VolumeMounts: []corev1.VolumeMount{
-					{Name: "docker-socket", MountPath: "/var/run"},
-					{Name: "docker-data", MountPath: "/var/lib/docker"},
-				},
+				VolumeMounts: dindVolumeMounts,
 			},
 		},
 		Containers: []corev1.Container{
@@ -569,11 +607,10 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 				),
 			},
 		},
-		Volumes: append(commonVolumes(),
-			corev1.Volume{Name: "docker-socket", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-			corev1.Volume{Name: "docker-data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
-		),
+		Volumes: volumes,
 	}
+
+	return podSpec
 }
 
 // GetAvailableArchitectures lists all nodes in the cluster and returns a map of

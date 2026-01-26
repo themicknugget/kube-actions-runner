@@ -102,6 +102,10 @@ spec:
             - name: DIND_IMAGE
               value: {{ .Values.config.dindImage | quote }}
             {{- end }}
+            {{- if .Values.config.registryMirror }}
+            - name: REGISTRY_MIRROR
+              value: {{ .Values.config.registryMirror | quote }}
+            {{- end }}
             {{- if .Values.config.skipNodeCheck }}
             - name: SKIP_NODE_CHECK
               value: "true"

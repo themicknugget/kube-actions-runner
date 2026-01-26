@@ -25,11 +25,12 @@ type Config struct {
 	Namespace string
 
 	// Runner configuration
-	LabelMatchers string
-	RunnerMode    k8s.RunnerMode
-	RunnerImage   string
-	DindImage     string
-	TTLSeconds    int32
+	LabelMatchers  string
+	RunnerMode     k8s.RunnerMode
+	RunnerImage    string
+	DindImage      string
+	RegistryMirror string
+	TTLSeconds     int32
 
 	// Node configuration
 	SkipNodeCheck bool
@@ -119,6 +120,8 @@ func Load() (*Config, error) {
 	if cfg.DindImage == "" {
 		cfg.DindImage = "docker:dind"
 	}
+
+	cfg.RegistryMirror = os.Getenv("REGISTRY_MIRROR")
 
 	ttlSecondsStr := os.Getenv("JOB_TTL_SECONDS")
 	if ttlSecondsStr != "" {

@@ -48,6 +48,12 @@ config:
   # This setting is ignored as dind is now an alias for dind-rootless
   dindImage: ""
 
+  # -- Registry mirror URL for DinD mode (optional)
+  # When set, configures Docker daemon to use this mirror for image pulls
+  # Example: "http://spegel.spegel-system.svc.cluster.local:5000"
+  # Only applies when runnerMode is "dind" or "dind-rootless"
+  registryMirror: ""
+
   # -- Listen address for the webhook server
   listenAddr: ":8080"
 
