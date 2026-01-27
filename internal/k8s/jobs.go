@@ -600,7 +600,7 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 	// Build the dockerd command
 	// Start dockerd with optional config file, wait for socket, chmod 666 so non-root runner can access it
 	// Use a sleep loop instead of wait so SIGTERM can interrupt and exit cleanly
-	dockerdCommand += "daemon-entrypoint.sh dockerd & PID=$!; "
+	dockerdCommand += "dockerd-entrypoint.sh dockerd & PID=$!; "
 	dockerdCommand += "while [ ! -S /var/run/docker.sock ]; do sleep 1; done; "
 	dockerdCommand += "chmod 666 /var/run/docker.sock; "
 	dockerdCommand += "while kill -0 $PID 2>/dev/null; do sleep 1; done"
