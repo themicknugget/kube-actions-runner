@@ -523,8 +523,7 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 	}
 
 	// Build dockerd command with optional registry mirror configuration
-	dockerdArgs := []string{"trap 'exit 0' TERM; "}
-	dockerdConfigFile := ""
+	dockerdCommand := "trap 'exit 0' TERM; "
 
 	if config.RegistryMirror != "" {
 		// Create daemon.json with registry mirror configuration
@@ -539,19 +538,16 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 			Name:      "docker-config",
 			MountPath: "/etc/docker",
 		})
-		dockerdConfigFile = fmt.Sprintf("echo '%s' > /etc/docker/daemon.json && ", daemonJSON)
+		dockerdCommand += fmt.Sprintf("echo '%s' > /etc/docker/daemon.json && ", daemonJSON)
 	}
 
 	// Build the dockerd command
 	// Start dockerd with optional config file, wait for socket, chmod 666 so non-root runner can access it
 	// Use a sleep loop instead of wait so SIGTERM can interrupt and exit cleanly
-	dockerdArgs = append(dockerdArgs,
-		dockerdConfigFile,
-		"daemon-entrypoint.sh dockerd & PID=$!; ",
-		"while [ ! -S /var/run/docker.sock ]; do sleep 1; done; ",
-		"chmod 666 /var/run/docker.sock; ",
-		"while kill -0 $PID 2>/dev/null; do sleep 1; done",
-	)
+	dockerdCommand += "daemon-entrypoint.sh dockerd & PID=$!; "
+	dockerdCommand += "while [ ! -S /var/run/docker.sock ]; do sleep 1; done; "
+	dockerdCommand += "chmod 666 /var/run/docker.sock; "
+	dockerdCommand += "while kill -0 $PID 2>/dev/null; do sleep 1; done"
 
 	podSpec := corev1.PodSpec{
 		RestartPolicy:             corev1.RestartPolicyNever,
@@ -572,7 +568,7 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 				Image:         dindImage,
 				RestartPolicy: ptr(corev1.ContainerRestartPolicyAlways),
 				Command:       []string{"/bin/sh", "-c"},
-				Args:          []string{string(dockerdArgs)},
+				Args:          []string{dockerdCommand},
 				Env: []corev1.EnvVar{
 					{Name: "DOCKER_TLS_CERTDIR", Value: ""}, // Disable TLS for local socket
 				},
