@@ -106,6 +106,10 @@ spec:
             - name: REGISTRY_MIRROR
               value: {{ .Values.config.registryMirror | quote }}
             {{- end }}
+            {{- if .Values.config.cachePvc }}
+            - name: CACHE_PVC
+              value: {{ .Values.config.cachePvc | quote }}
+            {{- end }}
             {{- if .Values.config.skipNodeCheck }}
             - name: SKIP_NODE_CHECK
               value: "true"

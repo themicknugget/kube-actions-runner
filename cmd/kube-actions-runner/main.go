@@ -161,6 +161,7 @@ func main() {
 		"runner_mode", cfg.RunnerMode,
 		"runner_image", cfg.RunnerImage,
 		"registry_mirror", cfg.RegistryMirror,
+		"cache_pvc", cfg.CachePVC,
 		"job_ttl_seconds", cfg.TTLSeconds,
 		"runner_group_id", cfg.RunnerGroupID,
 		"webhook_auto_register", cfg.WebhookAutoRegister,
@@ -183,6 +184,7 @@ func main() {
 		RunnerImage:     cfg.RunnerImage,
 		DindImage:       cfg.DindImage,
 		RegistryMirror:  cfg.RegistryMirror,
+		CachePVC:        cfg.CachePVC,
 		TTLSeconds:      cfg.TTLSeconds,
 		SkipNodeCheck:   cfg.SkipNodeCheck,
 	})

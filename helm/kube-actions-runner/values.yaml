@@ -54,6 +54,12 @@ config:
   # Only applies when runnerMode is "dind" or "dind-rootless"
   registryMirror: ""
 
+  # -- PersistentVolumeClaim for GitHub Actions cache
+  # When set, mounts a shared PVC to /tmp/github-cache for persistent workflow cache
+  # This allows actions/cache@v4 to persist cache across ephemeral runner jobs
+  # Example: "github-runner-cache"
+  cachePvc: ""
+
   # -- Listen address for the webhook server
   listenAddr: ":8080"
 

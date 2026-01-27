@@ -167,6 +167,7 @@ type RunnerJobConfig struct {
 	RunnerImage    string
 	DindImage      string
 	RegistryMirror string
+	CachePVC       string
 	TTLSeconds     int32
 }
 
@@ -193,6 +194,41 @@ func commonVolumeMounts() []corev1.VolumeMount {
 		{Name: "work", MountPath: "/home/runner/_work"},
 		{Name: "tmp", MountPath: "/tmp"},
 	}
+}
+
+const (
+	// CacheVolumeName is the name of the cache volume
+	CacheVolumeName = "github-cache"
+	// CacheMountPath is where the cache is mounted in the container
+	CacheMountPath = "/tmp/github-cache"
+)
+
+// addCacheVolumeMount adds the cache volume mount to the existing mounts
+func addCacheVolumeMount(mounts []corev1.VolumeMount) []corev1.VolumeMount {
+	return append(mounts, corev1.VolumeMount{
+		Name:      CacheVolumeName,
+		MountPath: CacheMountPath,
+	})
+}
+
+// addCacheVolume adds the cache PVC volume to the existing volumes
+func addCacheVolume(volumes []corev1.Volume, pvcName string) []corev1.Volume {
+	return append(volumes, corev1.Volume{
+		Name: CacheVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+				ClaimName: pvcName,
+			},
+		},
+	})
+}
+
+// addCacheEnvVar adds the ACTIONS_CACHE_URL environment variable
+func addCacheEnvVar(env []corev1.EnvVar) []corev1.EnvVar {
+	return append(env, corev1.EnvVar{
+		Name:  "ACTIONS_CACHE_URL",
+		Value: "file://" + CacheMountPath,
+	})
 }
 
 // buildNodeSelector detects architecture and OS labels from workflow labels
@@ -404,6 +440,28 @@ func (c *Client) buildStandardPodSpec(config RunnerJobConfig, secretName string)
 		image = DefaultRunnerImage
 	}
 
+	volumes := commonVolumes()
+	volumeMounts := commonVolumeMounts()
+	env := []corev1.EnvVar{
+		{
+			Name: "RUNNER_JITCONFIG",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: secretName,
+					},
+					Key: "jitconfig",
+				},
+			},
+		},
+	}
+
+	if config.CachePVC != "" {
+		volumes = addCacheVolume(volumes, config.CachePVC)
+		volumeMounts = addCacheVolumeMount(volumeMounts)
+		env = addCacheEnvVar(env)
+	}
+
 	return corev1.PodSpec{
 		RestartPolicy:             corev1.RestartPolicyNever,
 		NodeSelector:              buildNodeSelector(config.Labels),
@@ -421,29 +479,17 @@ func (c *Client) buildStandardPodSpec(config RunnerJobConfig, secretName string)
 				Image: image,
 				Command: []string{"/bin/sh", "-c"},
 				Args:    []string{"./run.sh --jitconfig \"$RUNNER_JITCONFIG\""},
-				Env: []corev1.EnvVar{
-					{
-						Name: "RUNNER_JITCONFIG",
-						ValueFrom: &corev1.EnvVarSource{
-							SecretKeyRef: &corev1.SecretKeySelector{
-								LocalObjectReference: corev1.LocalObjectReference{
-									Name: secretName,
-								},
-								Key: "jitconfig",
-							},
-						},
-					},
-				},
+				Env:     env,
 				SecurityContext: &corev1.SecurityContext{
 					AllowPrivilegeEscalation: ptr(false),
 					Capabilities: &corev1.Capabilities{
 						Drop: []corev1.Capability{"ALL"},
 					},
 				},
-				VolumeMounts: commonVolumeMounts(),
+				VolumeMounts: volumeMounts,
 			},
 		},
-		Volumes: commonVolumes(),
+		Volumes: volumes,
 	}
 }
 
@@ -454,6 +500,28 @@ func (c *Client) buildUserNSPodSpec(config RunnerJobConfig, secretName string) c
 	image := config.RunnerImage
 	if image == "" {
 		image = DefaultRunnerImage
+	}
+
+	volumes := commonVolumes()
+	volumeMounts := commonVolumeMounts()
+	env := []corev1.EnvVar{
+		{
+			Name: "RUNNER_JITCONFIG",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: secretName,
+					},
+					Key: "jitconfig",
+				},
+			},
+		},
+	}
+
+	if config.CachePVC != "" {
+		volumes = addCacheVolume(volumes, config.CachePVC)
+		volumeMounts = addCacheVolumeMount(volumeMounts)
+		env = addCacheEnvVar(env)
 	}
 
 	return corev1.PodSpec{
@@ -474,25 +542,13 @@ func (c *Client) buildUserNSPodSpec(config RunnerJobConfig, secretName string) c
 				Image: image,
 				Command: []string{"/bin/sh", "-c"},
 				Args:    []string{"./run.sh --jitconfig \"$RUNNER_JITCONFIG\""},
-				Env: []corev1.EnvVar{
-					{
-						Name: "RUNNER_JITCONFIG",
-						ValueFrom: &corev1.EnvVarSource{
-							SecretKeyRef: &corev1.SecretKeySelector{
-								LocalObjectReference: corev1.LocalObjectReference{
-									Name: secretName,
-								},
-								Key: "jitconfig",
-							},
-						},
-					},
-				},
+				Env:     env,
 				// No AllowPrivilegeEscalation: false - allow sudo to work
 				// User namespaces provide the real security boundary
-				VolumeMounts: commonVolumeMounts(),
+				VolumeMounts: volumeMounts,
 			},
 		},
-		Volumes: commonVolumes(),
+		Volumes: volumes,
 	}
 }
 
@@ -549,6 +605,34 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 	dockerdCommand += "chmod 666 /var/run/docker.sock; "
 	dockerdCommand += "while kill -0 $PID 2>/dev/null; do sleep 1; done"
 
+	// Build runner container env vars and volume mounts
+	runnerEnv := []corev1.EnvVar{
+		{
+			Name: "RUNNER_JITCONFIG",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: secretName,
+					},
+					Key: "jitconfig",
+				},
+			},
+		},
+		{Name: "DOCKER_HOST", Value: "unix:///var/run/docker.sock"},
+	}
+	runnerVolumeMounts := append(commonVolumeMounts(),
+		corev1.VolumeMount{Name: "docker-socket", MountPath: "/var/run"},
+	)
+
+	// Add cache PVC support
+	if config.CachePVC != "" {
+		volumes = addCacheVolume(volumes, config.CachePVC)
+		runnerVolumeMounts = addCacheVolumeMount(runnerVolumeMounts)
+		// Also add cache to dind so Docker can use it
+		dindVolumeMounts = addCacheVolumeMount(dindVolumeMounts)
+		runnerEnv = addCacheEnvVar(runnerEnv)
+	}
+
 	podSpec := corev1.PodSpec{
 		RestartPolicy:             corev1.RestartPolicyNever,
 		NodeSelector:              buildNodeSelector(config.Labels),
@@ -584,23 +668,8 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 				Image:   runnerImage,
 				Command: []string{"/bin/sh", "-c"},
 				Args:    []string{"./run.sh --jitconfig \"$RUNNER_JITCONFIG\""},
-				Env: []corev1.EnvVar{
-					{
-						Name: "RUNNER_JITCONFIG",
-						ValueFrom: &corev1.EnvVarSource{
-							SecretKeyRef: &corev1.SecretKeySelector{
-								LocalObjectReference: corev1.LocalObjectReference{
-									Name: secretName,
-								},
-								Key: "jitconfig",
-							},
-						},
-					},
-					{Name: "DOCKER_HOST", Value: "unix:///var/run/docker.sock"},
-				},
-				VolumeMounts: append(commonVolumeMounts(),
-					corev1.VolumeMount{Name: "docker-socket", MountPath: "/var/run"},
-				),
+				Env:     runnerEnv,
+				VolumeMounts: runnerVolumeMounts,
 			},
 		},
 		Volumes: volumes,

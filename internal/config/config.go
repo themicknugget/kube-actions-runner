@@ -30,6 +30,7 @@ type Config struct {
 	RunnerImage    string
 	DindImage      string
 	RegistryMirror string
+	CachePVC       string
 	TTLSeconds     int32
 
 	// Node configuration
@@ -122,6 +123,8 @@ func Load() (*Config, error) {
 	}
 
 	cfg.RegistryMirror = os.Getenv("REGISTRY_MIRROR")
+
+	cfg.CachePVC = os.Getenv("CACHE_PVC")
 
 	ttlSecondsStr := os.Getenv("JOB_TTL_SECONDS")
 	if ttlSecondsStr != "" {

@@ -25,6 +25,7 @@ type Scaler struct {
 	runnerImage      string
 	dindImage        string
 	registryMirror   string
+	cachePVC         string
 	ttlSeconds       int32
 	skipNodeCheck    bool
 	jobCreateMu      sync.Mutex // Serializes job creation for better topology spread
@@ -41,6 +42,7 @@ type Config struct {
 	RunnerImage     string
 	DindImage       string
 	RegistryMirror  string
+	CachePVC        string
 	TTLSeconds      int32
 	SkipNodeCheck   bool
 }
@@ -56,6 +58,7 @@ func NewScaler(cfg Config) *Scaler {
 		runnerImage:     cfg.RunnerImage,
 		dindImage:       cfg.DindImage,
 		registryMirror:  cfg.RegistryMirror,
+		cachePVC:        cfg.CachePVC,
 		ttlSeconds:      cfg.TTLSeconds,
 		skipNodeCheck:   cfg.SkipNodeCheck,
 	}
@@ -268,6 +271,7 @@ func (s *Scaler) createRunnerJob(ctx context.Context, name, jitConfig, owner, re
 		RunnerImage:    s.runnerImage,
 		DindImage:      s.dindImage,
 		RegistryMirror: s.registryMirror,
+		CachePVC:       s.cachePVC,
 		TTLSeconds:     s.ttlSeconds,
 	}
 
