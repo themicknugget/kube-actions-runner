@@ -511,10 +511,7 @@ func (r *Reconciler) createRunnerForJob(ctx context.Context, ghClient *ghclient.
 			// A runner named runner-123 could pick up ANY job from the queue, not just job 123
 			// So we need to check if it's actually waiting for work before reusing it
 			isStale, staleErr := r.k8sClient.IsRunnerPodStale(ctx, runnerName)
-			if staleErr != nil {
-				// If we can't determine staleness, try to delete and recreate
-				log.Warn("failed to check runner staleness, attempting cleanup", "error", staleErr.Error())
-			}
+			podExists := staleErr == nil || !strings.Contains(staleErr.Error(), "not found")
 
 			// Try to delete the existing runner
 			deleted, delErr := ghClient.DeleteRunnerByName(ctx, job.Owner, job.Repo, runnerName)
@@ -525,6 +522,12 @@ func (r *Reconciler) createRunnerForJob(ctx context.Context, ghClient *ghclient.
 					// Important: This may NOT be the job we're checking (runners pick up jobs dynamically)
 					// A runner named runner-61743804366 might pick up job 8e3de87d from the queue,
 					// leaving job 61743804366 still queued with no way to create a new runner.
+					if !podExists {
+						// Pod doesn't exist but GitHub runner is still registered and running
+						// This is an inconsistent state - wait for GitHub to clean up the runner
+						log.Warn("GitHub runner exists but no K8s pod found (inconsistent state), waiting for GitHub cleanup", "runner_name", runnerName)
+						return fmt.Errorf("waiting for GitHub runner cleanup")
+					}
 					if isStale {
 						// Runner is stale (waiting for jobs) but GitHub thinks it's running
 						// This is a GitHub API inconsistency - clean up K8s job to force recreation
