@@ -494,8 +494,9 @@ func (c *Client) buildStandardPodSpec(config RunnerJobConfig, secretName string)
 }
 
 // UserNS mode: hostUsers=false provides user namespace isolation
-// Runs as user 1000 (non-root) but allows privilege escalation for sudo
+// Runs as user 1000 (non-root) with sudo capability
 // User namespaces ensure even root in container is unprivileged on host
+// The entrypoint fixes /etc/passwd to allow sudo to work with remapped UIDs
 func (c *Client) buildUserNSPodSpec(config RunnerJobConfig, secretName string) corev1.PodSpec {
 	image := config.RunnerImage
 	if image == "" {
@@ -541,8 +542,17 @@ func (c *Client) buildUserNSPodSpec(config RunnerJobConfig, secretName string) c
 				Name:  "runner",
 				Image: image,
 				Command: []string{"/bin/sh", "-c"},
-				Args:    []string{"./run.sh --jitconfig \"$RUNNER_JITCONFIG\""},
-				Env:     env,
+				Args: []string{
+					// Fix /etc/passwd for sudo to work in user namespaces
+					// In user namespaces, the UID is remapped but /etc/passwd doesn't contain the mapped UID
+					// This causes sudo to fail with "you do not exist in the passwd database"
+					"uid=$(id -u);" +
+						"if ! grep -q \":$uid:\" /etc/passwd 2>/dev/null; then " +
+						"echo \"runner:x:$uid:$uid::/home/runner:/bin/sh\" >> /etc/passwd; " +
+						"fi; " +
+						"./run.sh --jitconfig \"$RUNNER_JITCONFIG\"",
+				},
+				Env: env,
 				// No AllowPrivilegeEscalation: false - allow sudo to work
 				// User namespaces provide the real security boundary
 				VolumeMounts: volumeMounts,
