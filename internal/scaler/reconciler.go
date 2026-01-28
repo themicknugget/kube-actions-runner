@@ -507,14 +507,43 @@ func (r *Reconciler) createRunnerForJob(ctx context.Context, ghClient *ghclient.
 		if strings.Contains(err.Error(), "409") && strings.Contains(err.Error(), "Already exists") {
 			log.Info("runner already registered in GitHub, checking if stale", "runner_name", runnerName)
 
+			// Check if the runner pod is stale (waiting for jobs)
+			// A runner named runner-123 could pick up ANY job from the queue, not just job 123
+			// So we need to check if it's actually waiting for work before reusing it
+			isStale, staleErr := r.k8sClient.IsRunnerPodStale(ctx, runnerName)
+			if staleErr != nil {
+				// If we can't determine staleness, try to delete and recreate
+				log.Warn("failed to check runner staleness, attempting cleanup", "error", staleErr.Error())
+			}
+
 			// Try to delete the existing runner
 			deleted, delErr := ghClient.DeleteRunnerByName(ctx, job.Owner, job.Repo, runnerName)
 			if delErr != nil {
 				// Check if deletion failed because runner is actively running a job
-				// This means the job is being processed - no need to create another runner
 				if strings.Contains(delErr.Error(), "422") && strings.Contains(delErr.Error(), "currently running a job") {
-					log.Info("runner is actively processing the job, skipping", "runner_name", runnerName)
-					return nil // Not an error - job is being handled
+					// Runner is actively processing a job in GitHub
+					// Important: This may NOT be the job we're checking (runners pick up jobs dynamically)
+					// A runner named runner-61743804366 might pick up job 8e3de87d from the queue,
+					// leaving job 61743804366 still queued with no way to create a new runner.
+					if isStale {
+						// Runner is stale (waiting for jobs) but GitHub thinks it's running
+						// This is a GitHub API inconsistency - clean up K8s job to force recreation
+						log.Warn("runner appears stale in logs but GitHub reports it running, cleaning up K8s job", "runner_name", runnerName)
+					} else {
+						// Runner is actively processing a different job from the queue
+						// Clean up K8s job so a new runner can be created on next cycle
+						// The GitHub runner will be cleaned up when it finishes its current job
+						log.Warn("runner is actively processing a different job, cleaning up K8s job to allow new runner creation", "runner_name", runnerName)
+					}
+					// Clean up the K8s job to break the stalemate
+					// On the next reconciliation cycle, a new K8s job will be created
+					if k8sDeleted, k8sErr := r.k8sClient.DeleteJob(ctx, runnerName); k8sErr != nil {
+						log.Warn("failed to delete K8s job", "error", k8sErr.Error())
+					} else if k8sDeleted {
+						log.Info("deleted K8s job, will retry on next cycle", "runner_name", runnerName)
+					}
+					// Return error to signal retry on next cycle
+					return fmt.Errorf("runner busy, cleanup attempted, will retry")
 				}
 				return fmt.Errorf("failed to delete stale runner: %w", delErr)
 			}
