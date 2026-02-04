@@ -60,6 +60,13 @@ config:
   # Example: "github-runner-cache"
   cachePvc: ""
 
+  # -- Tolerations for runner pods (JSON array format)
+  # Allows runners to schedule on nodes with matching taints
+  # Example for KubeEdge nodes:
+  #   runnerTolerations: |
+  #     [{"key":"node.kubeedge.io/edge","operator":"Equal","value":"true","effect":"NoSchedule"}]
+  runnerTolerations: ""
+
   # -- Listen address for the webhook server
   listenAddr: ":8080"
 

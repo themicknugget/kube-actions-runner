@@ -13,6 +13,7 @@ import (
 	"github.com/kube-actions-runner/kube-actions-runner/internal/k8s"
 	"github.com/kube-actions-runner/kube-actions-runner/internal/logger"
 	"github.com/kube-actions-runner/kube-actions-runner/internal/metrics"
+	corev1 "k8s.io/api/core/v1"
 )
 
 type Scaler struct {
@@ -28,6 +29,7 @@ type Scaler struct {
 	cachePVC         string
 	ttlSeconds       int32
 	skipNodeCheck    bool
+	tolerations      []corev1.Toleration
 	jobCreateMu      sync.Mutex // Serializes job creation for better topology spread
 	reconciler       *Reconciler // For recording activity to trigger faster polling
 }
@@ -45,6 +47,7 @@ type Config struct {
 	CachePVC        string
 	TTLSeconds      int32
 	SkipNodeCheck   bool
+	Tolerations     []corev1.Toleration
 }
 
 func NewScaler(cfg Config) *Scaler {
@@ -61,6 +64,7 @@ func NewScaler(cfg Config) *Scaler {
 		cachePVC:        cfg.CachePVC,
 		ttlSeconds:      cfg.TTLSeconds,
 		skipNodeCheck:   cfg.SkipNodeCheck,
+		tolerations:     cfg.Tolerations,
 	}
 }
 
@@ -273,6 +277,7 @@ func (s *Scaler) createRunnerJob(ctx context.Context, name, jitConfig, owner, re
 		RegistryMirror: s.registryMirror,
 		CachePVC:       s.cachePVC,
 		TTLSeconds:     s.ttlSeconds,
+		Tolerations:    s.tolerations,
 	}
 
 	// Serialize job creation to allow scheduler to see previous pods

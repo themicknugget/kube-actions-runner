@@ -169,6 +169,7 @@ type RunnerJobConfig struct {
 	RegistryMirror string
 	CachePVC       string
 	TTLSeconds     int32
+	Tolerations    []corev1.Toleration
 }
 
 func (c RunnerJobConfig) ttlSeconds() int32 {
@@ -466,6 +467,7 @@ func (c *Client) buildStandardPodSpec(config RunnerJobConfig, secretName string)
 		RestartPolicy:             corev1.RestartPolicyNever,
 		NodeSelector:              buildNodeSelector(config.Labels),
 		TopologySpreadConstraints: buildTopologySpreadConstraints(),
+		Tolerations:               config.Tolerations,
 		SecurityContext: &corev1.PodSecurityContext{
 			RunAsNonRoot: ptr(true),
 			RunAsUser:    ptr(int64(1000)),
@@ -529,6 +531,7 @@ func (c *Client) buildUserNSPodSpec(config RunnerJobConfig, secretName string) c
 		RestartPolicy:             corev1.RestartPolicyNever,
 		NodeSelector:              buildNodeSelector(config.Labels),
 		TopologySpreadConstraints: buildTopologySpreadConstraints(),
+		Tolerations:               config.Tolerations,
 		HostUsers:                 ptr(false),
 		SecurityContext: &corev1.PodSecurityContext{
 			RunAsNonRoot: ptr(true),
@@ -647,6 +650,7 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 		RestartPolicy:             corev1.RestartPolicyNever,
 		NodeSelector:              buildNodeSelector(config.Labels),
 		TopologySpreadConstraints: buildTopologySpreadConstraints(),
+		Tolerations:               config.Tolerations,
 		// Note: DinD requires privileged access to cgroups, which is incompatible with
 		// user namespace isolation (hostUsers=false). The dind sidecar is privileged,
 		// so user namespaces don't add significant security benefit in this mode.

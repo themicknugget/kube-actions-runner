@@ -187,6 +187,7 @@ func main() {
 		CachePVC:        cfg.CachePVC,
 		TTLSeconds:      cfg.TTLSeconds,
 		SkipNodeCheck:   cfg.SkipNodeCheck,
+		Tolerations:     cfg.Tolerations,
 	})
 
 	// Start reconciler to pick up orphaned queued jobs

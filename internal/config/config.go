@@ -1,10 +1,13 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
 
 	"github.com/kube-actions-runner/kube-actions-runner/internal/k8s"
 )
@@ -32,6 +35,7 @@ type Config struct {
 	RegistryMirror string
 	CachePVC       string
 	TTLSeconds     int32
+	Tolerations    []corev1.Toleration
 
 	// Node configuration
 	SkipNodeCheck bool
@@ -150,6 +154,14 @@ func Load() (*Config, error) {
 
 	// Node availability check configuration
 	cfg.SkipNodeCheck = os.Getenv("SKIP_NODE_CHECK") == "true"
+
+	// Runner pod tolerations (JSON array format)
+	tolerationsStr := os.Getenv("RUNNER_TOLERATIONS")
+	if tolerationsStr != "" {
+		if err := json.Unmarshal([]byte(tolerationsStr), &cfg.Tolerations); err != nil {
+			return nil, fmt.Errorf("invalid RUNNER_TOLERATIONS: %w (must be valid JSON array of toleration objects)", err)
+		}
+	}
 
 	// Reconciler configuration - enabled by default
 	reconcilerEnabledStr := os.Getenv("RECONCILER_ENABLED")

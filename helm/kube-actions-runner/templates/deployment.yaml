@@ -114,6 +114,10 @@ spec:
             - name: SKIP_NODE_CHECK
               value: "true"
             {{- end }}
+            {{- if .Values.config.runnerTolerations }}
+            - name: RUNNER_TOLERATIONS
+              value: {{ .Values.config.runnerTolerations | quote }}
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           livenessProbe:
