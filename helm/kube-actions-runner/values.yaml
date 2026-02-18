@@ -76,6 +76,16 @@ config:
   # of node availability.
   skipNodeCheck: false
 
+  # -- Runner container resources (JSON format)
+  # When empty, uses built-in balanced defaults (250m/4 CPU, 256Mi/8Gi memory)
+  # Example: '{"requests":{"cpu":"500m","memory":"1Gi"},"limits":{"cpu":"6","memory":"16Gi"}}'
+  runnerResources: ""
+
+  # -- DinD sidecar container resources (JSON format)
+  # When empty, uses built-in defaults (50m/500m CPU, 64Mi/512Mi memory)
+  # Only applies when runnerMode is "dind" or "dind-rootless"
+  dindResources: ""
+
 ### Webhook Auto-Registration
 # When enabled, the scaler will automatically discover repositories with
 # self-hosted runner workflows and register webhooks on them.

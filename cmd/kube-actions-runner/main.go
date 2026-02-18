@@ -188,6 +188,8 @@ func main() {
 		TTLSeconds:      cfg.TTLSeconds,
 		SkipNodeCheck:   cfg.SkipNodeCheck,
 		Tolerations:     cfg.Tolerations,
+		Resources:       cfg.RunnerResources,
+		DindResources:   cfg.DindResources,
 	})
 
 	// Start reconciler to pick up orphaned queued jobs

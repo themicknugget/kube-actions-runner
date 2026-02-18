@@ -11,6 +11,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/informers"
@@ -64,6 +65,52 @@ var archLabelMap = map[string]string{
 var osLabelMap = map[string]string{
 	"linux":   "linux",
 	"windows": "windows",
+}
+
+// defaultRunnerResources returns balanced resource requirements for the runner container
+// based on Prometheus analysis: CPU p50=0.09, p99=3.35, peak=4.72 | Memory p50=227MB, p99=10.3GB, peak=15.9GB
+func defaultRunnerResources() *corev1.ResourceRequirements {
+	return &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("250m"),
+			corev1.ResourceMemory: resource.MustParse("256Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("4"),
+			corev1.ResourceMemory: resource.MustParse("8Gi"),
+		},
+	}
+}
+
+// defaultDindResources returns resource requirements for the DinD sidecar container
+// based on Prometheus analysis: CPU p99=0.23, peak=0.36 | Memory p99=306MB, peak=447MB
+func defaultDindResources() *corev1.ResourceRequirements {
+	return &corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("50m"),
+			corev1.ResourceMemory: resource.MustParse("64Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("500m"),
+			corev1.ResourceMemory: resource.MustParse("512Mi"),
+		},
+	}
+}
+
+// getRunnerResources returns the configured resources or defaults
+func getRunnerResources(configured *corev1.ResourceRequirements) *corev1.ResourceRequirements {
+	if configured != nil {
+		return configured
+	}
+	return defaultRunnerResources()
+}
+
+// getDindResources returns the configured resources or defaults
+func getDindResources(configured *corev1.ResourceRequirements) *corev1.ResourceRequirements {
+	if configured != nil {
+		return configured
+	}
+	return defaultDindResources()
 }
 
 func ValidRunnerModes() []string {
@@ -170,6 +217,8 @@ type RunnerJobConfig struct {
 	CachePVC       string
 	TTLSeconds     int32
 	Tolerations    []corev1.Toleration
+	Resources      *corev1.ResourceRequirements
+	DindResources  *corev1.ResourceRequirements
 }
 
 func (c RunnerJobConfig) ttlSeconds() int32 {
@@ -463,6 +512,9 @@ func (c *Client) buildStandardPodSpec(config RunnerJobConfig, secretName string)
 		env = addCacheEnvVar(env)
 	}
 
+	// Get runner resources (configured or defaults)
+	runnerResources := getRunnerResources(config.Resources)
+
 	return corev1.PodSpec{
 		RestartPolicy:             corev1.RestartPolicyNever,
 		NodeSelector:              buildNodeSelector(config.Labels),
@@ -489,6 +541,7 @@ func (c *Client) buildStandardPodSpec(config RunnerJobConfig, secretName string)
 					},
 				},
 				VolumeMounts: volumeMounts,
+				Resources:    *runnerResources,
 			},
 		},
 		Volumes: volumes,
@@ -527,6 +580,9 @@ func (c *Client) buildUserNSPodSpec(config RunnerJobConfig, secretName string) c
 		env = addCacheEnvVar(env)
 	}
 
+	// Get runner resources (configured or defaults)
+	runnerResources := getRunnerResources(config.Resources)
+
 	return corev1.PodSpec{
 		RestartPolicy:             corev1.RestartPolicyNever,
 		NodeSelector:              buildNodeSelector(config.Labels),
@@ -559,6 +615,7 @@ func (c *Client) buildUserNSPodSpec(config RunnerJobConfig, secretName string) c
 				// No AllowPrivilegeEscalation: false - allow sudo to work
 				// User namespaces provide the real security boundary
 				VolumeMounts: volumeMounts,
+				Resources:    *runnerResources,
 			},
 		},
 		Volumes: volumes,
@@ -646,6 +703,10 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 		runnerEnv = addCacheEnvVar(runnerEnv)
 	}
 
+	// Get runner and dind resources (configured or defaults)
+	runnerResources := getRunnerResources(config.Resources)
+	dindResources := getDindResources(config.DindResources)
+
 	podSpec := corev1.PodSpec{
 		RestartPolicy:             corev1.RestartPolicyNever,
 		NodeSelector:              buildNodeSelector(config.Labels),
@@ -674,6 +735,7 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 					Privileged: ptr(true),
 				},
 				VolumeMounts: dindVolumeMounts,
+				Resources:    *dindResources,
 			},
 		},
 		Containers: []corev1.Container{
@@ -684,6 +746,7 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 				Args:    []string{"./run.sh --jitconfig \"$RUNNER_JITCONFIG\""},
 				Env:     runnerEnv,
 				VolumeMounts: runnerVolumeMounts,
+				Resources:    *runnerResources,
 			},
 		},
 		Volumes: volumes,

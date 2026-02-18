@@ -8,6 +8,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/kube-actions-runner/kube-actions-runner/internal/k8s"
 )
@@ -36,6 +37,10 @@ type Config struct {
 	CachePVC       string
 	TTLSeconds     int32
 	Tolerations    []corev1.Toleration
+
+	// Resource configuration
+	RunnerResources *corev1.ResourceRequirements
+	DindResources   *corev1.ResourceRequirements
 
 	// Node configuration
 	SkipNodeCheck bool
@@ -163,6 +168,26 @@ func Load() (*Config, error) {
 		}
 	}
 
+	// Runner container resources (JSON format)
+	runnerResourcesStr := os.Getenv("RUNNER_RESOURCES")
+	if runnerResourcesStr != "" {
+		resources, err := parseResourceRequirements(runnerResourcesStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid RUNNER_RESOURCES: %w", err)
+		}
+		cfg.RunnerResources = resources
+	}
+
+	// DinD sidecar resources (JSON format)
+	dindResourcesStr := os.Getenv("DIND_RESOURCES")
+	if dindResourcesStr != "" {
+		resources, err := parseResourceRequirements(dindResourcesStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid DIND_RESOURCES: %w", err)
+		}
+		cfg.DindResources = resources
+	}
+
 	// Reconciler configuration - enabled by default
 	reconcilerEnabledStr := os.Getenv("RECONCILER_ENABLED")
 	cfg.ReconcilerEnabled = reconcilerEnabledStr != "false" // Default to true
@@ -204,4 +229,65 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// parseResourceRequirements parses a JSON string into ResourceRequirements
+func parseResourceRequirements(jsonStr string) (*corev1.ResourceRequirements, error) {
+	// Define a helper struct for parsing the JSON
+	type resourceListJSON struct {
+		CPU    string `json:"cpu"`
+		Memory string `json:"memory"`
+	}
+	type resourcesJSON struct {
+		Requests *resourceListJSON `json:"requests"`
+		Limits   *resourceListJSON `json:"limits"`
+	}
+
+	var raw resourcesJSON
+	if err := json.Unmarshal([]byte(jsonStr), &raw); err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+
+	resources := &corev1.ResourceRequirements{
+		Requests: make(corev1.ResourceList),
+		Limits:   make(corev1.ResourceList),
+	}
+
+	// Parse requests
+	if raw.Requests != nil {
+		if raw.Requests.CPU != "" {
+			q, err := resource.ParseQuantity(raw.Requests.CPU)
+			if err != nil {
+				return nil, fmt.Errorf("invalid CPU request: %w", err)
+			}
+			resources.Requests[corev1.ResourceCPU] = q
+		}
+		if raw.Requests.Memory != "" {
+			q, err := resource.ParseQuantity(raw.Requests.Memory)
+			if err != nil {
+				return nil, fmt.Errorf("invalid memory request: %w", err)
+			}
+			resources.Requests[corev1.ResourceMemory] = q
+		}
+	}
+
+	// Parse limits
+	if raw.Limits != nil {
+		if raw.Limits.CPU != "" {
+			q, err := resource.ParseQuantity(raw.Limits.CPU)
+			if err != nil {
+				return nil, fmt.Errorf("invalid CPU limit: %w", err)
+			}
+			resources.Limits[corev1.ResourceCPU] = q
+		}
+		if raw.Limits.Memory != "" {
+			q, err := resource.ParseQuantity(raw.Limits.Memory)
+			if err != nil {
+				return nil, fmt.Errorf("invalid memory limit: %w", err)
+			}
+			resources.Limits[corev1.ResourceMemory] = q
+		}
+	}
+
+	return resources, nil
 }

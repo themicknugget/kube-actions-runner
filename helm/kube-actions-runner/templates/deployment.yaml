@@ -118,6 +118,14 @@ spec:
             - name: RUNNER_TOLERATIONS
               value: {{ .Values.config.runnerTolerations | quote }}
             {{- end }}
+            {{- if .Values.config.runnerResources }}
+            - name: RUNNER_RESOURCES
+              value: {{ .Values.config.runnerResources | quote }}
+            {{- end }}
+            {{- if .Values.config.dindResources }}
+            - name: DIND_RESOURCES
+              value: {{ .Values.config.dindResources | quote }}
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           livenessProbe:
