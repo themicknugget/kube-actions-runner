@@ -22,6 +22,19 @@ fullnameOverride: ""
 # -- Number of webhook-scaler replicas
 replicaCount: 1
 
+# -- Extra environment variables to add to the webhook-scaler container
+# Supports both value and valueFrom patterns
+# Example:
+#   extraEnv:
+#     - name: DOCKER_CACHE_REGISTRY
+#       value: "docker-cache.github-runners:5000"
+#     - name: MY_SECRET
+#       valueFrom:
+#         secretKeyRef:
+#           name: my-secret
+#           key: my-key
+extraEnv: []
+
 ### Config
 config:
   # -- Runner mode: "standard", "userns", "dind", or "dind-rootless"
