@@ -651,20 +651,25 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 	// Build dockerd command with optional registry mirror configuration
 	dockerdCommand := "trap 'exit 0' TERM; "
 
+	// Always write daemon.json: auto-detect pod MTU from eth0 so Docker's bridge MTU
+	// matches the pod interface. Without this, Docker defaults to 1500 while Cilium
+	// sets pod MTU to 1420, causing oversized packets to be silently dropped (TLS
+	// handshake timeouts on registry cache misses).
+	volumes = append(volumes, corev1.Volume{
+		Name: "docker-config",
+		VolumeSource: corev1.VolumeSource{
+			EmptyDir: &corev1.EmptyDirVolumeSource{},
+		},
+	})
+	dindVolumeMounts = append(dindVolumeMounts, corev1.VolumeMount{
+		Name:      "docker-config",
+		MountPath: "/etc/docker",
+	})
+	dockerdCommand += "MTU=$(cat /sys/class/net/eth0/mtu); "
 	if config.RegistryMirror != "" {
-		// Create daemon.json with registry mirror configuration
-		daemonJSON := fmt.Sprintf(`{"registry-mirrors":["%s"]}`, config.RegistryMirror)
-		volumes = append(volumes, corev1.Volume{
-			Name: "docker-config",
-			VolumeSource: corev1.VolumeSource{
-				EmptyDir: &corev1.EmptyDirVolumeSource{},
-			},
-		})
-		dindVolumeMounts = append(dindVolumeMounts, corev1.VolumeMount{
-			Name:      "docker-config",
-			MountPath: "/etc/docker",
-		})
-		dockerdCommand += fmt.Sprintf("echo '%s' > /etc/docker/daemon.json && ", daemonJSON)
+		dockerdCommand += fmt.Sprintf(`echo "{\"registry-mirrors\":[\"%s\"],\"mtu\":$MTU}" > /etc/docker/daemon.json && `, config.RegistryMirror)
+	} else {
+		dockerdCommand += `echo "{\"mtu\":$MTU}" > /etc/docker/daemon.json && `
 	}
 
 	// Build the dockerd command
