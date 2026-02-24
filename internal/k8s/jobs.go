@@ -651,10 +651,10 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 	// Build dockerd command with optional registry mirror configuration
 	dockerdCommand := "trap 'exit 0' TERM; "
 
-	// Always write daemon.json: auto-detect pod MTU from eth0 so Docker's bridge MTU
-	// matches the pod interface. Without this, Docker defaults to 1500 while Cilium
-	// sets pod MTU to 1420, causing oversized packets to be silently dropped (TLS
-	// handshake timeouts on registry cache misses).
+	// Always write daemon.json: auto-detect pod MTU from the default route interface
+	// so Docker's bridge MTU matches the pod interface. Without this, Docker defaults
+	// to 1500 while Cilium sets pod MTU to 1420, causing oversized packets to be
+	// silently dropped (TLS handshake timeouts on registry cache misses).
 	volumes = append(volumes, corev1.Volume{
 		Name: "docker-config",
 		VolumeSource: corev1.VolumeSource{
@@ -665,7 +665,7 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 		Name:      "docker-config",
 		MountPath: "/etc/docker",
 	})
-	dockerdCommand += "MTU=$(cat /sys/class/net/eth0/mtu); "
+	dockerdCommand += "MTU=$(cat /sys/class/net/$(ip route | awk '/^default/ {print $5; exit}')/mtu); "
 	if config.RegistryMirror != "" {
 		dockerdCommand += fmt.Sprintf(`echo "{\"registry-mirrors\":[\"%s\"],\"mtu\":$MTU}" > /etc/docker/daemon.json && `, config.RegistryMirror)
 	} else {
