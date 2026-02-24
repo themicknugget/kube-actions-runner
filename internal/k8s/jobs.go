@@ -651,10 +651,19 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 	// Build dockerd command with optional registry mirror configuration
 	dockerdCommand := "trap 'exit 0' TERM; "
 
-	// Always write daemon.json: auto-detect pod MTU from the default route interface
-	// so Docker's bridge MTU matches the pod interface. Without this, Docker defaults
-	// to 1500 while Cilium sets pod MTU to 1420, causing oversized packets to be
-	// silently dropped (TLS handshake timeouts on registry cache misses).
+	// Always write daemon.json with two critical settings:
+	// 1. MTU: auto-detect pod MTU from the default route interface so Docker's bridge
+	//    MTU matches the pod interface. Without this, Docker defaults to 1500 while
+	//    Cilium sets pod MTU to 1420, causing TLS handshake timeouts on cache misses.
+	// 2. storage-driver=vfs: prevents nested overlayfs mounts. The runner container
+	//    already runs on an overlayfs layer (containerd). When dind uses overlay2 as
+	//    its storage driver, it creates overlayfs mounts whose upperdir/workdir overlap
+	//    with the container's own overlay layer, triggering kernel warnings:
+	//    "overlayfs: upperdir is in-use as upperdir/workdir of another mount,
+	//    accessing files from both mounts will result in undefined behavior."
+	//    This undefined behavior corrupts files written through the overlay (e.g.,
+	//    downloaded GitHub Actions tarballs are extracted with truncated contents,
+	//    causing ReferenceError/SyntaxError at runtime). vfs avoids all overlay nesting.
 	volumes = append(volumes, corev1.Volume{
 		Name: "docker-config",
 		VolumeSource: corev1.VolumeSource{
@@ -667,9 +676,9 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 	})
 	dockerdCommand += "MTU=$(cat /sys/class/net/$(ip route | awk '/^default/ {print $5; exit}')/mtu); "
 	if config.RegistryMirror != "" {
-		dockerdCommand += fmt.Sprintf(`echo "{\"registry-mirrors\":[\"%s\"],\"mtu\":$MTU}" > /etc/docker/daemon.json && `, config.RegistryMirror)
+		dockerdCommand += fmt.Sprintf(`echo "{\"registry-mirrors\":[\"%s\"],\"mtu\":$MTU,\"storage-driver\":\"vfs\"}" > /etc/docker/daemon.json && `, config.RegistryMirror)
 	} else {
-		dockerdCommand += `echo "{\"mtu\":$MTU}" > /etc/docker/daemon.json && `
+		dockerdCommand += `echo "{\"mtu\":$MTU,\"storage-driver\":\"vfs\"}" > /etc/docker/daemon.json && `
 	}
 
 	// Build the dockerd command
