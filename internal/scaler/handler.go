@@ -32,6 +32,7 @@ type Scaler struct {
 	tolerations      []corev1.Toleration
 	resources        *corev1.ResourceRequirements
 	dindResources    *corev1.ResourceRequirements
+	envVars          []corev1.EnvVar
 	jobCreateMu      sync.Mutex // Serializes job creation for better topology spread
 	reconciler       *Reconciler // For recording activity to trigger faster polling
 }
@@ -52,6 +53,7 @@ type Config struct {
 	Tolerations     []corev1.Toleration
 	Resources       *corev1.ResourceRequirements
 	DindResources   *corev1.ResourceRequirements
+	EnvVars         []corev1.EnvVar
 }
 
 func NewScaler(cfg Config) *Scaler {
@@ -71,6 +73,7 @@ func NewScaler(cfg Config) *Scaler {
 		tolerations:     cfg.Tolerations,
 		resources:       cfg.Resources,
 		dindResources:   cfg.DindResources,
+		envVars:         cfg.EnvVars,
 	}
 }
 
@@ -286,6 +289,7 @@ func (s *Scaler) createRunnerJob(ctx context.Context, name, jitConfig, owner, re
 		Tolerations:    s.tolerations,
 		Resources:      s.resources,
 		DindResources:  s.dindResources,
+		EnvVars:        s.envVars,
 	}
 
 	// Serialize job creation to allow scheduler to see previous pods

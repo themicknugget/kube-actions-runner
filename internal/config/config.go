@@ -42,6 +42,9 @@ type Config struct {
 	RunnerResources *corev1.ResourceRequirements
 	DindResources   *corev1.ResourceRequirements
 
+	// Runner pod configuration
+	RunnerEnvVars []corev1.EnvVar
+
 	// Node configuration
 	SkipNodeCheck bool
 
@@ -186,6 +189,14 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("invalid DIND_RESOURCES: %w", err)
 		}
 		cfg.DindResources = resources
+	}
+
+	// Runner pod environment variables (JSON array format)
+	runnerEnvVarsStr := os.Getenv("RUNNER_ENV_VARS")
+	if runnerEnvVarsStr != "" {
+		if err := json.Unmarshal([]byte(runnerEnvVarsStr), &cfg.RunnerEnvVars); err != nil {
+			return nil, fmt.Errorf("invalid RUNNER_ENV_VARS: %w (must be valid JSON array of env var objects)", err)
+		}
 	}
 
 	// Reconciler configuration - enabled by default

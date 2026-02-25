@@ -22,19 +22,6 @@ fullnameOverride: ""
 # -- Number of webhook-scaler replicas
 replicaCount: 1
 
-# -- Extra environment variables to add to the webhook-scaler container
-# Supports both value and valueFrom patterns
-# Example:
-#   extraEnv:
-#     - name: DOCKER_CACHE_REGISTRY
-#       value: "docker-cache.github-runners:5000"
-#     - name: MY_SECRET
-#       valueFrom:
-#         secretKeyRef:
-#           name: my-secret
-#           key: my-key
-extraEnv: []
-
 ### Config
 config:
   # -- Runner mode: "standard", "userns", "dind", or "dind-rootless"
@@ -98,6 +85,13 @@ config:
   # When empty, uses built-in defaults (50m/500m CPU, 64Mi/512Mi memory)
   # Only applies when runnerMode is "dind" or "dind-rootless"
   dindResources: ""
+
+  # -- Environment variables to inject into runner pods (JSON array format)
+  # Each entry is an env var object with name and value (or valueFrom)
+  # Example: |
+  #   runnerEnvVars: |
+  #     [{"name":"DOCKER_CACHE_REGISTRY","value":"docker-cache.github-runners:5000"}]
+  runnerEnvVars: ""
 
 ### Webhook Auto-Registration
 # When enabled, the scaler will automatically discover repositories with

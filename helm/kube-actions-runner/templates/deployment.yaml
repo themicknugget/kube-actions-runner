@@ -126,8 +126,9 @@ spec:
             - name: DIND_RESOURCES
               value: {{ .Values.config.dindResources | quote }}
             {{- end }}
-            {{- with .Values.extraEnv }}
-            {{- toYaml . | nindent 12 }}
+            {{- if .Values.config.runnerEnvVars }}
+            - name: RUNNER_ENV_VARS
+              value: {{ .Values.config.runnerEnvVars | quote }}
             {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}

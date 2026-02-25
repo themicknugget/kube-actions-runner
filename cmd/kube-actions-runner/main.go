@@ -190,6 +190,7 @@ func main() {
 		Tolerations:     cfg.Tolerations,
 		Resources:       cfg.RunnerResources,
 		DindResources:   cfg.DindResources,
+		EnvVars:         cfg.RunnerEnvVars,
 	})
 
 	// Start reconciler to pick up orphaned queued jobs

@@ -219,6 +219,7 @@ type RunnerJobConfig struct {
 	Tolerations    []corev1.Toleration
 	Resources      *corev1.ResourceRequirements
 	DindResources  *corev1.ResourceRequirements
+	EnvVars        []corev1.EnvVar
 }
 
 func (c RunnerJobConfig) ttlSeconds() int32 {
@@ -279,6 +280,11 @@ func addCacheEnvVar(env []corev1.EnvVar) []corev1.EnvVar {
 		Name:  "ACTIONS_CACHE_URL",
 		Value: "file://" + CacheMountPath,
 	})
+}
+
+// addRunnerEnvVars appends extra environment variables to the runner container
+func addRunnerEnvVars(env []corev1.EnvVar, extraVars []corev1.EnvVar) []corev1.EnvVar {
+	return append(env, extraVars...)
 }
 
 // buildNodeSelector detects architecture and OS labels from workflow labels
@@ -512,6 +518,9 @@ func (c *Client) buildStandardPodSpec(config RunnerJobConfig, secretName string)
 		env = addCacheEnvVar(env)
 	}
 
+	// Add extra env vars from config
+	env = append(env, config.EnvVars...)
+
 	// Get runner resources (configured or defaults)
 	runnerResources := getRunnerResources(config.Resources)
 
@@ -579,6 +588,9 @@ func (c *Client) buildUserNSPodSpec(config RunnerJobConfig, secretName string) c
 		volumeMounts = addCacheVolumeMount(volumeMounts)
 		env = addCacheEnvVar(env)
 	}
+
+	// Add extra env vars from config
+	env = addRunnerEnvVars(env, config.EnvVars)
 
 	// Get runner resources (configured or defaults)
 	runnerResources := getRunnerResources(config.Resources)
@@ -716,6 +728,9 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 		dindVolumeMounts = addCacheVolumeMount(dindVolumeMounts)
 		runnerEnv = addCacheEnvVar(runnerEnv)
 	}
+
+	// Add extra env vars from config to runner
+	runnerEnv = addRunnerEnvVars(runnerEnv, config.EnvVars)
 
 	// Get runner and dind resources (configured or defaults)
 	runnerResources := getRunnerResources(config.Resources)
