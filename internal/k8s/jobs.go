@@ -686,28 +686,11 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 		Name:      "docker-config",
 		MountPath: "/etc/docker",
 	})
-	// Collect insecure registries from env vars (e.g. DOCKER_CACHE_REGISTRY)
-	// so Docker will allow HTTP pushes/pulls to these registries
-	var insecureRegistries []string
-	for _, env := range config.EnvVars {
-		if env.Name == "DOCKER_CACHE_REGISTRY" && env.Value != "" {
-			insecureRegistries = append(insecureRegistries, env.Value)
-		}
-	}
-
 	dockerdCommand += "MTU=$(cat /sys/class/net/$(ip route | awk '/^default/ {print $5; exit}')/mtu); "
-	// Build daemon.json with MTU (injected at runtime), storage-driver,
-	// and optional registry-mirrors and insecure-registries
+	// Build daemon.json with MTU and storage-driver, plus optional registry-mirrors
 	daemonCfg := `{\"mtu\":$MTU,\"storage-driver\":\"vfs\"`
 	if config.RegistryMirror != "" {
 		daemonCfg += fmt.Sprintf(`,\"registry-mirrors\":[\"%s\"]`, config.RegistryMirror)
-	}
-	if len(insecureRegistries) > 0 {
-		quoted := make([]string, len(insecureRegistries))
-		for i, r := range insecureRegistries {
-			quoted[i] = fmt.Sprintf(`\"%s\"`, r)
-		}
-		daemonCfg += fmt.Sprintf(`,\"insecure-registries\":[%s]`, strings.Join(quoted, ","))
 	}
 	daemonCfg += `}`
 	dockerdCommand += fmt.Sprintf(`echo "%s" > /etc/docker/daemon.json && `, daemonCfg)
