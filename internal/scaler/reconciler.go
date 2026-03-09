@@ -523,10 +523,21 @@ func (r *Reconciler) createRunnerForJob(ctx context.Context, ghClient *ghclient.
 					// A runner named runner-61743804366 might pick up job 8e3de87d from the queue,
 					// leaving job 61743804366 still queued with no way to create a new runner.
 					if !podExists {
-						// Pod doesn't exist but GitHub runner is still registered and running
-						// This is an inconsistent state - wait for GitHub to clean up the runner
-						log.Warn("GitHub runner exists but no K8s pod found (inconsistent state), waiting for GitHub cleanup", "runner_name", runnerName)
-						return fmt.Errorf("waiting for GitHub runner cleanup")
+						// Pod doesn't exist but GitHub runner is still registered and running a different job.
+						// The old runner name is permanently occupied until that job finishes.
+						// Use an alternate name so we can create a new runner for this queued job.
+						altName := fmt.Sprintf("runner-%d-r", job.ID)
+						log.Info("GitHub runner busy with different job and no K8s pod, retrying with alternate name", "old_runner", runnerName, "new_runner", altName)
+						altJIT, altErr := ghClient.GenerateJITConfig(ctx, job.Owner, job.Repo, altName, job.Labels)
+						if altErr != nil {
+							if strings.Contains(altErr.Error(), "409") {
+								log.Warn("alternate runner name also conflicts, waiting for cleanup", "runner_name", altName)
+								return fmt.Errorf("waiting for GitHub runner cleanup")
+							}
+							return fmt.Errorf("failed to generate JIT config with alternate name: %w", altErr)
+						}
+						_, createErr := r.scaler.createRunnerJob(ctx, altName, altJIT.EncodedJITConfig, job.Owner, job.Repo, job.ID, job.Labels)
+						return createErr
 					}
 					if isStale {
 						// Runner is stale (waiting for jobs) but GitHub thinks it's running
