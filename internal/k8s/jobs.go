@@ -982,7 +982,21 @@ func (c *Client) ListRunnerJobStates(ctx context.Context) (map[int64]RunnerJobSt
 // IsRunnerPodStale checks if a runner pod is stale (waiting for jobs) by examining its logs.
 // A stale runner will have "Listening for Jobs" as one of its recent log lines.
 // Returns: isStale (true if waiting for jobs), error
-func (c *Client) IsRunnerPodStale(ctx context.Context, podName string) (bool, error) {
+func (c *Client) IsRunnerPodStale(ctx context.Context, jobName string) (bool, error) {
+	// Find the pod by job-name label since K8s Jobs append a random suffix to pod names
+	pods, err := c.clientset.CoreV1().Pods(c.namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("job-name=%s", jobName),
+	})
+	if err != nil {
+		return false, fmt.Errorf("failed to list pods for job %s: %w", jobName, err)
+	}
+	if len(pods.Items) == 0 {
+		return false, fmt.Errorf("pod not found for job %s", jobName)
+	}
+
+	// Use the first matching pod (there should only be one per job)
+	podName := pods.Items[0].Name
+
 	// Get the last few lines of logs from the runner container
 	tailLines := int64(10)
 	req := c.clientset.CoreV1().Pods(c.namespace).GetLogs(podName, &corev1.PodLogOptions{
