@@ -688,11 +688,10 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 	})
 	dockerdCommand += "MTU=$(cat /sys/class/net/$(ip route | awk '/^default/ {print $5; exit}')/mtu); "
 	if config.RegistryMirror != "" {
-		// Use containerd-snapshotter mode so Docker uses containerd for image storage.
-		// This enables per-registry mirror config via hosts.toml, allowing Spegel to
-		// act as a pull-through cache for ALL registries (not just Docker Hub).
-		// Use "native" snapshotter to avoid nested overlayfs corruption (same as vfs).
-		daemonCfg := `{\"mtu\":$MTU,\"features\":{\"containerd-snapshotter\":true}}`
+		// Docker 29+ uses containerd-snapshotter by default, which enables per-registry
+		// mirror config via hosts.toml. This lets Spegel act as a pull-through cache
+		// for ALL registries (ghcr.io, quay.io, etc.), not just Docker Hub.
+		daemonCfg := `{\"mtu\":$MTU}`
 		dockerdCommand += fmt.Sprintf(`echo "%s" > /etc/docker/daemon.json && `, daemonCfg)
 		// Configure per-registry mirrors via containerd hosts.toml
 		// Spegel uses the ?ns= query parameter to identify the upstream registry
@@ -784,8 +783,7 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 				Command:       []string{"/bin/sh", "-c"},
 				Args:          []string{dockerdCommand},
 				Env: []corev1.EnvVar{
-					{Name: "DOCKER_TLS_CERTDIR", Value: ""},          // Disable TLS for local socket
-					{Name: "CONTAINERD_SNAPSHOTTER", Value: "native"}, // Avoid nested overlayfs corruption
+					{Name: "DOCKER_TLS_CERTDIR", Value: ""}, // Disable TLS for local socket
 				},
 				SecurityContext: &corev1.SecurityContext{
 					Privileged: ptr(true),
