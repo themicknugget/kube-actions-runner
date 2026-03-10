@@ -687,13 +687,37 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 		MountPath: "/etc/docker",
 	})
 	dockerdCommand += "MTU=$(cat /sys/class/net/$(ip route | awk '/^default/ {print $5; exit}')/mtu); "
-	// Build daemon.json with MTU and storage-driver, plus optional registry-mirrors
-	daemonCfg := `{\"mtu\":$MTU,\"storage-driver\":\"vfs\"`
 	if config.RegistryMirror != "" {
-		daemonCfg += fmt.Sprintf(`,\"registry-mirrors\":[\"%s\"]`, config.RegistryMirror)
+		// Use containerd-snapshotter mode so Docker uses containerd for image storage.
+		// This enables per-registry mirror config via hosts.toml, allowing Spegel to
+		// act as a pull-through cache for ALL registries (not just Docker Hub).
+		// Use "native" snapshotter to avoid nested overlayfs corruption (same as vfs).
+		daemonCfg := `{\"mtu\":$MTU,\"features\":{\"containerd-snapshotter\":true},\"default-snapshotter\":\"native\"}`
+		dockerdCommand += fmt.Sprintf(`echo "%s" > /etc/docker/daemon.json && `, daemonCfg)
+		// Configure per-registry mirrors via containerd hosts.toml
+		// Spegel uses the ?ns= query parameter to identify the upstream registry
+		registries := []struct{ name, server string }{
+			{"docker.io", "https://registry-1.docker.io"},
+			{"ghcr.io", "https://ghcr.io"},
+			{"quay.io", "https://quay.io"},
+			{"mcr.microsoft.com", "https://mcr.microsoft.com"},
+			{"gcr.io", "https://gcr.io"},
+			{"registry.k8s.io", "https://registry.k8s.io"},
+			{"public.ecr.aws", "https://public.ecr.aws"},
+			{"cgr.dev", "https://cgr.dev"},
+		}
+		for _, reg := range registries {
+			dockerdCommand += fmt.Sprintf(
+				`mkdir -p /etc/containerd/certs.d/%s && `+
+					`printf 'server = "%s"\n\n[host."%s"]\n  capabilities = ["pull", "resolve"]\n' > /etc/containerd/certs.d/%s/hosts.toml && `,
+				reg.name, reg.server, config.RegistryMirror, reg.name,
+			)
+		}
+	} else {
+		// No registry mirror — use vfs storage driver to avoid nested overlayfs corruption
+		daemonCfg := `{\"mtu\":$MTU,\"storage-driver\":\"vfs\"}`
+		dockerdCommand += fmt.Sprintf(`echo "%s" > /etc/docker/daemon.json && `, daemonCfg)
 	}
-	daemonCfg += `}`
-	dockerdCommand += fmt.Sprintf(`echo "%s" > /etc/docker/daemon.json && `, daemonCfg)
 
 	// Build the dockerd command
 	// Start dockerd with optional config file, wait for socket, chmod 666 so non-root runner can access it
