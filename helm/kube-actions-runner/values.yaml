@@ -39,9 +39,8 @@ config:
   runnerGroupId: ""
 
   # -- Runner container image (optional)
-  # Leave empty to use the default image based on runnerMode:
-  #   - standard/userns: ghcr.io/actions/actions-runner:2.330.0
-  #   - dind/dind-rootless: ghcr.io/actions-runner-controller/actions-runner-controller/actions-runner-dind-rootless:ubuntu-22.04
+  # Leave empty to auto-resolve the latest GitHub Actions runner version at startup.
+  # Falls back to a hardcoded version if the GitHub API is unreachable.
   runnerImage: ""
 
   # -- Docker-in-Docker sidecar image (DEPRECATED - dind mode now uses rootless Docker)

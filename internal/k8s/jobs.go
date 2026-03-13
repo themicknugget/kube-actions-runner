@@ -3,8 +3,11 @@ package k8s
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"log"
+	"net/http"
 	"strings"
 	"time"
 
@@ -32,9 +35,46 @@ const (
 )
 
 const (
-	DefaultRunnerImage       = "ghcr.io/actions/actions-runner:2.330.0"
+	fallbackRunnerVersion    = "2.332.0"
+	runnerImageRepo          = "ghcr.io/actions/actions-runner"
 	DefaultDinDRootlessImage = "ghcr.io/actions-runner-controller/actions-runner-controller/actions-runner-dind-rootless:ubuntu-22.04"
 )
+
+// DefaultRunnerImage is resolved at startup by querying the GitHub releases API.
+// Falls back to the hardcoded fallbackRunnerVersion if the API is unreachable.
+var DefaultRunnerImage = runnerImageRepo + ":" + fallbackRunnerVersion
+
+func init() {
+	if v := fetchLatestRunnerVersion(); v != "" {
+		DefaultRunnerImage = runnerImageRepo + ":" + v
+		log.Printf("resolved latest GitHub Actions runner version: %s", v)
+	} else {
+		log.Printf("using fallback GitHub Actions runner version: %s", fallbackRunnerVersion)
+	}
+	// Update the mode-specific map (initialized before init() runs)
+	for mode := range defaultRunnerImages {
+		defaultRunnerImages[mode] = DefaultRunnerImage
+	}
+}
+
+func fetchLatestRunnerVersion() string {
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get("https://api.github.com/repos/actions/runner/releases/latest")
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return ""
+	}
+	return strings.TrimPrefix(release.TagName, "v")
+}
 
 var validRunnerModes = map[RunnerMode]bool{
 	RunnerModeStandard:     true,
