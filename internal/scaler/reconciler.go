@@ -475,6 +475,15 @@ func (r *Reconciler) reconcileRepo(ctx context.Context, ghClient *ghclient.Clien
 			if time.Since(state.CreatedAt) < 60*time.Second {
 				continue
 			}
+			// Skip completed jobs — the runner already ran. Give GitHub API time to
+			// reflect the completion. Without this, we'd enter a create-delete loop
+			// where the reconciler keeps recreating runners for jobs GitHub still
+			// reports as "queued" due to API lag or unmet job dependencies.
+			if state.IsComplete {
+				log.Debug("skipping queued job with completed K8s runner",
+					"job_id", job.ID, "completed_at", state.CompletedAt)
+				continue
+			}
 		}
 
 		log.Info("creating runner for queued job", "job_id", job.ID, "job_name", job.Name)

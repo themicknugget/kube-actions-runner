@@ -974,8 +974,10 @@ func (c *Client) CleanupOrphanedSecrets(ctx context.Context) (int, error) {
 
 // RunnerJobState contains the state of a runner job for reconciler decision making
 type RunnerJobState struct {
-	Exists    bool
-	CreatedAt time.Time
+	Exists      bool
+	CreatedAt   time.Time
+	IsComplete  bool
+	CompletedAt time.Time
 }
 
 // ListRunnerJobStates returns job states for all runner jobs in the namespace.
@@ -994,10 +996,19 @@ func (c *Client) ListRunnerJobStates(ctx context.Context) (map[int64]RunnerJobSt
 			var id int64
 			fmt.Sscanf(jobIDStr, "%d", &id)
 			if id > 0 {
-				result[id] = RunnerJobState{
+				state := RunnerJobState{
 					Exists:    true,
 					CreatedAt: job.CreationTimestamp.Time,
 				}
+				// Check if the job has completed
+				for _, cond := range job.Status.Conditions {
+					if cond.Type == batchv1.JobComplete && cond.Status == corev1.ConditionTrue {
+						state.IsComplete = true
+						state.CompletedAt = cond.LastTransitionTime.Time
+						break
+					}
+				}
+				result[id] = state
 			}
 		}
 	}
