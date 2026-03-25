@@ -338,7 +338,7 @@ func (r *Reconciler) cleanupOrphanedRunners(ctx context.Context) {
 
 		// Check if the runner is actively processing a job by examining pod logs
 		// If the runner is NOT showing "Listening for Jobs", it's actively working
-		isStale, err := r.k8sClient.IsRunnerPodStale(ctx, job.PodName)
+		isStale, err := r.k8sClient.IsRunnerPodStale(ctx, job.Name)
 		if err != nil {
 			log.Debug("failed to check if runner is stale, skipping",
 				"runner", job.RunnerName,

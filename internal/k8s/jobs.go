@@ -1074,7 +1074,8 @@ func (c *Client) IsRunnerPodStale(ctx context.Context, jobName string) (bool, er
 	podName := pods.Items[0].Name
 
 	// Get the last few lines of logs from the runner container
-	tailLines := int64(10)
+	// Use enough lines to see past periodic token refresh messages
+	tailLines := int64(50)
 	req := c.clientset.CoreV1().Pods(c.namespace).GetLogs(podName, &corev1.PodLogOptions{
 		Container: "runner",
 		TailLines: &tailLines,
@@ -1086,7 +1087,6 @@ func (c *Client) IsRunnerPodStale(ctx context.Context, jobName string) (bool, er
 	}
 	defer stream.Close()
 
-	// Read the logs and check for "Listening for Jobs"
 	scanner := bufio.NewScanner(stream)
 	var lastLines []string
 	for scanner.Scan() {
@@ -1097,16 +1097,18 @@ func (c *Client) IsRunnerPodStale(ctx context.Context, jobName string) (bool, er
 		return false, fmt.Errorf("failed to read pod logs: %w", err)
 	}
 
-	// Check if "Listening for Jobs" appears in recent logs
-	// This indicates the runner is idle and waiting for work
+	// A runner is stale (idle) if it's not actively running a job.
+	// Active job indicators: "Running job:", "Current runner state: Running"
+	// Idle indicators: "Listening for Jobs", or only token refresh messages
 	for _, line := range lastLines {
-		if strings.Contains(line, "Listening for Jobs") {
-			return true, nil
+		if strings.Contains(line, "Running job:") || strings.Contains(line, "Current runner state: Running") {
+			// Runner is actively processing a job
+			return false, nil
 		}
 	}
 
-	// If we don't see "Listening for Jobs", the runner is likely processing a job
-	return false, nil
+	// If no active job indicators found, the runner is idle/stale
+	return true, nil
 }
 
 // CleanupAttemptedAnnotation is set on jobs where cleanup was attempted but the runner
