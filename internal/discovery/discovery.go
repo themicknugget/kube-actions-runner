@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/go-github/v57/github"
+	ghclient "github.com/kube-actions-runner/kube-actions-runner/internal/github"
 	"github.com/kube-actions-runner/kube-actions-runner/internal/logger"
 	"github.com/kube-actions-runner/kube-actions-runner/internal/tokens"
 )
@@ -65,6 +66,7 @@ func (d *Discoverer) DiscoverRepos(ctx context.Context) ([]RepoInfo, error) {
 		}
 
 		user, resp, err := client.Users.Get(ctx, "")
+		ghclient.RecordRateLimitForOwner(ownerToken.Owner, resp)
 		if err != nil {
 			if resp != nil && resp.StatusCode == 401 {
 				d.logger.Error("GitHub token is invalid or expired", "owner", ownerToken.Owner, "error", err)
@@ -83,6 +85,7 @@ func (d *Discoverer) DiscoverRepos(ctx context.Context) ([]RepoInfo, error) {
 
 		for {
 			repos, resp, err := client.Repositories.ListByAuthenticatedUser(ctx, opts)
+			ghclient.RecordRateLimitForOwner(ownerToken.Owner, resp)
 			if err != nil {
 				if resp != nil {
 					switch resp.StatusCode {

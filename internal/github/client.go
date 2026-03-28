@@ -11,9 +11,21 @@ import (
 	"github.com/kube-actions-runner/kube-actions-runner/internal/tokens"
 )
 
+// rateLimitEntry holds a rate limit reading with its capture time
+type rateLimitEntry struct {
+	remaining  int
+	recordedAt time.Time
+}
+
+// rateLimitStalenessThreshold is how long before a cached rate limit value
+// is considered stale. Set slightly above GitHub's 1-hour rate limit window
+// so the reconciler will retry after a full window has passed even if no
+// API calls refresh the cache.
+const rateLimitStalenessThreshold = 65 * time.Minute
+
 // rateLimitStore holds the last known rate limit remaining for each owner
 var (
-	rateLimitStore   = make(map[string]int)
+	rateLimitStore   = make(map[string]rateLimitEntry)
 	rateLimitStoreMu sync.RWMutex
 )
 
@@ -95,20 +107,44 @@ func (c *Client) recordAPIMetrics(endpoint string, startTime time.Time, resp *gi
 		metrics.GitHubAPIRateLimitRemaining.WithLabelValues(c.owner).Set(float64(resp.Rate.Remaining))
 		// Store rate limit for this owner
 		rateLimitStoreMu.Lock()
-		rateLimitStore[c.owner] = resp.Rate.Remaining
+		rateLimitStore[c.owner] = rateLimitEntry{
+				remaining:  resp.Rate.Remaining,
+				recordedAt: time.Now(),
+			}
 		rateLimitStoreMu.Unlock()
 	}
 }
 
 // GetRateLimitRemaining returns the last known rate limit remaining for an owner.
-// Returns -1 if no rate limit information is available for the owner.
+// Returns -1 if no rate limit information is available for the owner or if the
+// cached value is stale (older than rateLimitStalenessThreshold).
 func GetRateLimitRemaining(owner string) int {
 	rateLimitStoreMu.RLock()
 	defer rateLimitStoreMu.RUnlock()
-	if remaining, ok := rateLimitStore[owner]; ok {
-		return remaining
+	if entry, ok := rateLimitStore[owner]; ok {
+		if time.Since(entry.recordedAt) > rateLimitStalenessThreshold {
+			return -1
+		}
+		return entry.remaining
 	}
 	return -1
+}
+
+// RecordRateLimitForOwner updates the rate limit store for a given owner from
+// a raw GitHub API response. This allows code that bypasses Client (e.g.
+// discovery) to keep the shared rate limit cache up to date.
+func RecordRateLimitForOwner(owner string, resp *github.Response) {
+	if resp == nil || resp.Rate.Remaining < 0 {
+		return
+	}
+	rateLimitStoreMu.Lock()
+	rateLimitStore[owner] = rateLimitEntry{
+		remaining:  resp.Rate.Remaining,
+		recordedAt: time.Now(),
+	}
+	rateLimitStoreMu.Unlock()
+
+	metrics.GitHubAPIRateLimitRemaining.WithLabelValues(owner).Set(float64(resp.Rate.Remaining))
 }
 
 type JITConfig struct {
