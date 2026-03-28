@@ -698,6 +698,13 @@ func (c *Client) buildDinDRootlessPodSpec(config RunnerJobConfig, secretName str
 	dindVolumeMounts := []corev1.VolumeMount{
 		{Name: "docker-socket", MountPath: "/var/run"},
 		{Name: "docker-data", MountPath: "/var/lib/docker"},
+		// Share work and tmp volumes so Docker bind-mounts resolve inside the
+		// sidecar's filesystem. When the runner creates a job container it
+		// bind-mounts /home/runner/_work -> /__w, /home/runner/_work/_tool -> /__t,
+		// and /tmp -> /__e. Without these mounts the Docker daemon can't find the
+		// source paths and the tool cache / workspace are empty in job containers.
+		{Name: "work", MountPath: "/home/runner/_work"},
+		{Name: "tmp", MountPath: "/tmp"},
 	}
 
 	// Build dockerd command with optional registry mirror configuration
