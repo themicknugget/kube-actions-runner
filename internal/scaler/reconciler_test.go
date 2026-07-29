@@ -12,6 +12,7 @@ import (
 	"github.com/kube-actions-runner/kube-actions-runner/internal/tokens"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 // mockGHClient implements a mock GitHub client for testing
@@ -281,5 +282,114 @@ func TestReconciler_HandlesMultipleOwners(t *testing.T) {
 	owners := registry.GetConfiguredOwners()
 	if len(owners) != 2 {
 		t.Errorf("expected 2 owners, got %d", len(owners))
+	}
+}
+
+// readyNodeReconciler returns a Ready node with the given arch label for use
+// in reconciler arch-check tests.
+func readyNodeReconciler(name, arch string) *corev1.Node {
+	return &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+			Labels: map[string]string{
+				"kubernetes.io/arch": arch,
+			},
+		},
+		Status: corev1.NodeStatus{
+			Conditions: []corev1.NodeCondition{
+				{Type: corev1.NodeReady, Status: corev1.ConditionTrue},
+			},
+		},
+	}
+}
+
+func TestReconciler_SkipsArm64Jobs(t *testing.T) {
+	// Cluster has only amd64 nodes. An arm64 job arriving in the reconciler
+	// should be skipped without creating a K8s Job (it would otherwise sit
+	// Pending forever and accumulate on every reconciliation cycle).
+	fakeClientset := fake.NewSimpleClientset(readyNodeReconciler("node1", "amd64"))
+	k8sClient := k8s.NewClientWithClientset(fakeClientset, "test-ns")
+
+	log := logger.New()
+	s := &Scaler{
+		k8sClient: k8sClient,
+		logger:    log,
+	}
+	r := &Reconciler{
+		scaler: s,
+		logger: log,
+	}
+
+	// Use a real *ghclient.Client; the test never reaches GenerateJITConfig
+	// because the arch check should short-circuit before then.
+	gh := ghclient.NewClientForOwner("test-token", 1, "testowner")
+
+	job := ghclient.QueuedJob{
+		ID:     424242,
+		Name:   "arm64-build",
+		Owner:  "testowner",
+		Repo:   "testrepo",
+		Labels: []string{"self-hosted", "arm64"},
+	}
+
+	if err := r.createRunnerForJob(context.Background(), gh, job); err != nil {
+		t.Fatalf("expected nil error for skipped arm64 job, got: %v", err)
+	}
+
+	// Verify no K8s Job was created in the namespace
+	jobs, err := fakeClientset.BatchV1().Jobs("test-ns").List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("failed to list jobs: %v", err)
+	}
+	if len(jobs.Items) != 0 {
+		names := make([]string, 0, len(jobs.Items))
+		for _, j := range jobs.Items {
+			names = append(names, j.Name)
+		}
+		t.Errorf("expected no jobs to be created, got: %v", names)
+	}
+}
+
+func TestReconciler_AllowsAmd64Jobs(t *testing.T) {
+	// Sanity check: when the cluster supports the requested arch, the
+	// reconciler does NOT short-circuit and proceeds to create the K8s job.
+	// We don't care about the GH client behavior here; we're verifying the
+	// arch check doesn't reject valid jobs.
+	fakeClientset := fake.NewSimpleClientset(readyNodeReconciler("node1", "amd64"))
+	k8sClient := k8s.NewClientWithClientset(fakeClientset, "test-ns")
+
+	log := logger.New()
+	s := &Scaler{
+		k8sClient: k8sClient,
+		logger:    log,
+	}
+	r := &Reconciler{
+		scaler: s,
+		logger: log,
+	}
+
+	// Use a real *ghclient.Client whose underlying HTTP client will fail
+	// (nil transport) when GenerateJITConfig is called. That's fine: we
+	// only care that skipForArch did not short-circuit this job, which
+	// manifests as the error originating from GitHub, not from the arch
+	// check. The test simply verifies the error is NOT a "no nodes
+	// available" error.
+	gh := ghclient.NewClientForOwner("test-token", 1, "testowner")
+
+	job := ghclient.QueuedJob{
+		ID:     515151,
+		Name:   "amd64-build",
+		Owner:  "testowner",
+		Repo:   "testrepo",
+		Labels: []string{"self-hosted", "amd64"},
+	}
+
+	err := r.createRunnerForJob(context.Background(), gh, job)
+	if err == nil {
+		t.Fatal("expected an error from downstream GH/K8s call, got nil")
+	}
+	// The arch check should not be the source of the error
+	if err.Error() == "no nodes available for architecture, job will remain queued in GitHub" {
+		t.Errorf("expected arch check to pass for amd64 with amd64 nodes, got arch error: %v", err)
 	}
 }

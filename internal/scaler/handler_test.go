@@ -15,6 +15,10 @@ import (
 	ghclient "github.com/kube-actions-runner/kube-actions-runner/internal/github"
 	"github.com/kube-actions-runner/kube-actions-runner/internal/k8s"
 	"github.com/kube-actions-runner/kube-actions-runner/internal/logger"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 type GitHubClient interface {
@@ -547,5 +551,116 @@ func TestHandleWebhook_WithoutSelfHostedLabel(t *testing.T) {
 
 	if rr.Code != http.StatusOK {
 		t.Errorf("expected status %d when self-hosted label missing, got %d", http.StatusOK, rr.Code)
+	}
+}
+
+// readyNode returns a Ready node with the given arch label for use with the
+// fake clientset in arch-related tests.
+func readyNode(name, arch string) *corev1.Node {
+	return &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+			Labels: map[string]string{
+				"kubernetes.io/arch": arch,
+			},
+		},
+		Status: corev1.NodeStatus{
+			Conditions: []corev1.NodeCondition{
+				{Type: corev1.NodeReady, Status: corev1.ConditionTrue},
+			},
+		},
+	}
+}
+
+// newArchTestScaler builds a Scaler backed by a fake clientset containing
+// the given nodes. Tests can set additional fields (e.g. skipNodeCheck)
+// directly on the returned Scaler.
+func newArchTestScaler(nodes ...runtime.Object) *Scaler {
+	fakeClientset := fake.NewSimpleClientset(nodes...)
+	return &Scaler{
+		k8sClient: k8s.NewClientWithClientset(fakeClientset, "test-ns"),
+		logger:    logger.New(),
+	}
+}
+
+func TestSkipForArch_NoArchLabel(t *testing.T) {
+	// No arch label -> skip check should not trigger
+	s := newArchTestScaler(readyNode("node1", "amd64"))
+
+	skip, arch, err := s.skipForArch(context.Background(), []string{"self-hosted", "linux"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if skip {
+		t.Errorf("expected skip=false, got true")
+	}
+	if arch != "" {
+		t.Errorf("expected empty arch, got %q", arch)
+	}
+}
+
+func TestSkipForArch_NoNodesForArm64(t *testing.T) {
+	// Cluster only has amd64 nodes -> arm64 jobs should be skipped
+	s := newArchTestScaler(readyNode("node1", "amd64"))
+
+	skip, arch, err := s.skipForArch(context.Background(), []string{"self-hosted", "arm64"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !skip {
+		t.Errorf("expected skip=true, got false")
+	}
+	if arch != "arm64" {
+		t.Errorf("expected arch=arm64, got %q", arch)
+	}
+}
+
+func TestSkipForArch_HasNodesForAmd64(t *testing.T) {
+	// Cluster has amd64 nodes -> amd64 jobs should not be skipped
+	s := newArchTestScaler(readyNode("node1", "amd64"))
+
+	skip, arch, err := s.skipForArch(context.Background(), []string{"self-hosted", "amd64"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if skip {
+		t.Errorf("expected skip=false, got true")
+	}
+	if arch != "amd64" {
+		t.Errorf("expected arch=amd64, got %q", arch)
+	}
+}
+
+func TestSkipForArch_SkipNodeCheckBypassesCheck(t *testing.T) {
+	// skipNodeCheck=true should bypass the check entirely, even if the
+	// cluster has no nodes for the requested arch.
+	s := newArchTestScaler(readyNode("node1", "amd64"))
+	s.skipNodeCheck = true
+
+	skip, arch, err := s.skipForArch(context.Background(), []string{"self-hosted", "arm64"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if skip {
+		t.Errorf("expected skip=false when skipNodeCheck=true, got true")
+	}
+	if arch != "" {
+		t.Errorf("expected empty arch when skipNodeCheck=true, got %q", arch)
+	}
+}
+
+func TestSkipForArch_NoNodesAtAll(t *testing.T) {
+	// Empty cluster with arm64 job -> skip
+	s := newArchTestScaler()
+
+	skip, arch, err := s.skipForArch(context.Background(), []string{"self-hosted", "arm64"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !skip {
+		t.Errorf("expected skip=true with no nodes, got false")
+	}
+	if arch != "arm64" {
+		t.Errorf("expected arch=arm64, got %q", arch)
 	}
 }

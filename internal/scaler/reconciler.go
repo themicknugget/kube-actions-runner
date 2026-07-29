@@ -507,6 +507,21 @@ func (r *Reconciler) matchesLabels(labels []string) bool {
 
 func (r *Reconciler) createRunnerForJob(ctx context.Context, ghClient *ghclient.Client, job ghclient.QueuedJob) error {
 	log := r.logger.With("component", "reconciler", "owner", job.Owner, "repo", job.Repo, "job_id", job.ID)
+
+	// Check node availability for required architecture
+	// The webhook handler applies this check too; without it, the reconciler
+	// would re-create K8s jobs for arm64 requests every cycle even though no
+	// arm64 nodes exist (causing Pending Jobs to accumulate).
+	skip, arch, err := r.scaler.skipForArch(ctx, job.Labels)
+	if err != nil {
+		log.Error("failed to check node availability", "error", err.Error(), "arch", arch)
+		return fmt.Errorf("failed to check node availability: %w", err)
+	}
+	if skip {
+		log.Warn("no nodes available for architecture, job will remain queued in GitHub", "arch", arch)
+		return nil
+	}
+
 	runnerName := fmt.Sprintf("runner-%d", job.ID)
 
 	// Generate JIT config

@@ -173,21 +173,15 @@ func (s *Scaler) processQueuedJob(ctx context.Context, w http.ResponseWriter, ev
 	}
 
 	// Check node availability for required architecture
-	if !s.skipNodeCheck {
-		requiredArch := k8s.GetRequiredArchFromLabels(jobLabels)
-		if requiredArch != "" {
-			hasNodes, err := s.k8sClient.HasNodesForArchitecture(ctx, requiredArch)
-			if err != nil {
-				log.Error("failed to check node availability", "error", err.Error(), "arch", requiredArch)
-				respondError(http.StatusInternalServerError, "failed to check node availability")
-				return
-			}
-			if !hasNodes {
-				log.Warn("no nodes available for architecture, job will remain queued in GitHub", "arch", requiredArch)
-				respond(http.StatusOK)
-				return
-			}
-		}
+	skip, arch, err := s.skipForArch(ctx, jobLabels)
+	if err != nil {
+		log.Error("failed to check node availability", "error", err.Error(), "arch", arch)
+		respondError(http.StatusInternalServerError, "failed to check node availability")
+		return
+	}
+	if skip {
+		respond(http.StatusOK)
+		return
 	}
 
 	runnerName := fmt.Sprintf("runner-%d", jobID)
@@ -270,6 +264,35 @@ func (s *Scaler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 		respondError(statusCode, owner, repo, message)
 	}
 	s.processQueuedJob(ctx, w, event, processRespond, processRespondError)
+}
+
+// skipForArch reports whether a job should be skipped because the cluster has no
+// nodes that match its required architecture. It is a no-op when skipNodeCheck
+// is true or when no architecture label is present on the job.
+//
+// Returns:
+//   - (skip=true, arch, nil): the job's required arch is unsupported by the cluster
+//   - (skip=false, "", nil):   check is disabled or no arch label was found
+//   - (skip=false, arch, err): failed to query node availability
+func (s *Scaler) skipForArch(ctx context.Context, labels []string) (skip bool, arch string, err error) {
+	if s.skipNodeCheck {
+		return false, "", nil
+	}
+
+	requiredArch := k8s.GetRequiredArchFromLabels(labels)
+	if requiredArch == "" {
+		return false, "", nil
+	}
+
+	hasNodes, err := s.k8sClient.HasNodesForArchitecture(ctx, requiredArch)
+	if err != nil {
+		return false, requiredArch, fmt.Errorf("failed to check node availability: %w", err)
+	}
+	if !hasNodes {
+		s.logger.Warn("no nodes available for architecture, job will remain queued in GitHub", "arch", requiredArch)
+		return true, requiredArch, nil
+	}
+	return false, requiredArch, nil
 }
 
 func (s *Scaler) createRunnerJob(ctx context.Context, name, jitConfig, owner, repo string, workflowID int64, labels []string) (k8s.RunnerMode, error) {
